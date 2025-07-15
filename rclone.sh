@@ -61,7 +61,7 @@ RCLONE_URL="https://downloads.rclone.org/${RCLONE_ZIP}"
 
 echo "下载rclone: $RCLONE_URL"
 if ! curl -O --fail "$RCLONE_URL"; then
-    echo "下载rclone失败，请检查网络连接或URL是否正确"
+    echo "下载rclone失败失败，请检查网络连接或URL是否正确"
     exit 1
 fi
 
@@ -71,15 +71,16 @@ if [ ! -f "$RCLONE_ZIP" ]; then
     exit 1
 fi
 
-# 解压并查找rclone可执行文件
+# 解压并查找rclone可执行文件，自动覆盖现有文件
 echo "解压rclone安装包..."
-unzip -q "$RCLONE_ZIP"
+unzip -o -q "$RCLONE_ZIP"  # 添加-o参数自动覆盖文件，无需交互
 
 # 查找解压后的目录（处理可能的版本号变化）
-RCLONE_DIR=$(find . -type d -name "rclone-*-linux-${ARCH}" | head -n 1)
+RCLONE_DIR=$(find . -maxdepth 1 -type d -name "rclone-*-linux-${ARCH}" | head -n 1)
 
 if [ -z "$RCLONE_DIR" ]; then
     echo "找不到rclone解压目录"
+    ls -l  # 列出当前目录内容帮助调试
     exit 1
 fi
 
@@ -88,6 +89,7 @@ echo "找到rclone目录: $RCLONE_DIR"
 # 检查rclone可执行文件是否存在
 if [ ! -f "${RCLONE_DIR}/rclone" ]; then
     echo "rclone可执行文件不存在于解压目录中"
+    ls -l "$RCLONE_DIR"  # 列出目录内容帮助调试
     exit 1
 fi
 
