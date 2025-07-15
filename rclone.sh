@@ -17,14 +17,18 @@ fi
 # 定义变量
 RCLONE_CONFIG_DIR="/root/.config/rclone"
 RCLONE_CONFIG_FILE="$RCLONE_CONFIG_DIR/rclone.conf"
-CURRENT_USER=$(logname 2>/dev/null || echo $SUDO_USER)
-[ -z "$CURRENT_USER" ] && CURRENT_USER=$(whoami)
-MOUNT_POINT="/home/$CURRENT_USER/rclone"
+MOUNT_POINT="/home/user/rclone"
 REMOTE_NAME="test"
 REMOTE_URL="http://yy.19885172.xyz:19798/dav"
 FUSE_CONF="/etc/fuse.conf"
 WEBDAV_USER="root"
 WEBDAV_PASS="password"
+
+# 验证 user 用户是否存在
+if ! id "user" >/dev/null 2>&1; then
+  echo "错误：用户 'user' 不存在，请创建用户或修改挂载点"
+  exit 1
+fi
 
 # 步骤 1: 清理包管理器并安装依赖
 echo "正在清理包管理器并安装必要依赖..."
@@ -99,9 +103,9 @@ fi
 
 # 步骤 7: 创建挂载点
 mkdir -p "$MOUNT_POINT"
-chown "$CURRENT_USER:$CURRENT_USER" "$MOUNT_POINT" || {
+chown user:user "$MOUNT_POINT" || {
   echo "警告：无法设置挂载点权限，请手动检查"
-  echo "当前用户: $CURRENT_USER，挂载点: $MOUNT_POINT"
+  echo "挂载点: $MOUNT_POINT"
 }
 
 # 步骤 8: 配置 fuse
@@ -122,7 +126,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-User=$CURRENT_USER
+User=user
 ExecStart=/usr/bin/rclone mount $REMOTE_NAME:/ $MOUNT_POINT \
   --allow-other \
   --vfs-cache-mode writes \
@@ -143,7 +147,11 @@ EOF
 # 步骤 10: 启用并启动服务
 systemctl daemon-reload
 systemctl enable rclone-mount.service
-systemctl start rclone-mount.service
+if ! systemctl start rclone-mount.service; then
+  echo "错误：systemd 服务启动失败，请检查日志"
+  echo "运行以下命令查看状态：sudo systemctl status rclone-mount.service"
+  exit 1
+fi
 
 # 等待挂载完成
 sleep 10
@@ -158,7 +166,7 @@ else
   echo "- rclone 挂载日志：/var/log/rclone_mount.log"
   echo "- systemd 服务状态：sudo systemctl status rclone-mount.service"
   echo "尝试手动运行以下命令以调试："
-  echo "sudo -u $CURRENT_USER rclone mount $REMOTE_NAME:/ $MOUNT_POINT --allow-other --vfs-cache-mode writes --dir-cache-time 72h --cache-dir /tmp/rclone --vfs-read-chunk-size 32M --vfs-read-chunk-size-limit off --verbose"
+  echo "sudo -u user rclone mount $REMOTE_NAME:/ $MOUNT_POINT --allow-other --vfs-cache-mode writes --dir-cache-time 72h --cache-dir /tmp/rclone --vfs-read-chunk-size 32M --vfs-read-chunk-size-limit off --verbose"
   exit 1
 fi
 
