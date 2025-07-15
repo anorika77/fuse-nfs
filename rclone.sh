@@ -1,184 +1,136 @@
 #!/bin/bash
-
-# 设置错误处理
 set -e
 
-# 日志文件
-LOG_FILE="/home/user/rclone_setup.log"
-exec > >(tee -a "$LOG_FILE") 2>&1
-echo "开始执行 rclone 一键安装脚本 - $(date)"
-
-# 检查是否以 root 权限运行
-if [ "$EUID" -ne 0 ]; then
-  echo "错误：请以 root 权限运行此脚本 (sudo $0)"
-  exit 1
+# 检查是否以root权限运行
+if [ "$(id -u)" -ne 0 ]; then
+    echo "请使用root权限运行此脚本 (sudo $0)"
+    exit 1
 fi
 
-# 定义变量
-RCLONE_CONFIG_DIR="/root/.config/rclone"
-RCLONE_CONFIG_FILE="$RCLONE_CONFIG_DIR/rclone.conf"
-MOUNT_POINT="/home/user/rclone"
-REMOTE_NAME="test"
-REMOTE_URL="http://yy.19885172.xyz:19798/dav"
-FUSE_CONF="/etc/fuse.conf"
-WEBDAV_USER="root"
-WEBDAV_PASS="password"
-RCLONE_MOUNT_LOG="/home/user/rclone_mount.log"
-RCLONE_TEST_LOG="/home/user/rclone_test.log"
+# 配置变量 - 根据需求设置
+RCLONE_VERSION="current"  # 使用最新版本
+MOUNT_POINT="/home/user/rclone"  # 挂载点
+REMOTE_NAME="test"         # 远程存储名称
+REMOTE_TYPE="webdav"       # 远程存储类型为webdav
+WEBDAV_URL="http://yy.19885172.xyz:19798/dav"  # 远程webdav URL
+WEBDAV_USER="root"         # webdav用户名
+WEBDAV_PASS="password"     # webdav密码
 
-# 验证 user 用户是否存在
-if ! id "user" >/dev/null 2>&1; then
-  echo "错误：用户 'user' 不存在，请创建用户或修改挂载点"
-  exit 1
+# 检查并安装依赖
+echo "=== 检查并安装必要依赖 ==="
+
+# 更新包列表
+apt update -y
+
+# 定义需要安装的依赖
+DEPENDENCIES="curl unzip fuse3"
+
+# 检查并安装每个依赖
+for dep in $DEPENDENCIES; do
+    if ! dpkg -s $dep &> /dev/null; then
+        echo "安装依赖: $dep"
+        apt install -y $dep
+    else
+        echo "依赖已安装: $dep"
+    fi
+done
+
+# 检查fuse3模块是否加载
+if ! lsmod | grep -q fuse; then
+    echo "加载fuse模块..."
+    modprobe fuse
+else
+    echo "fuse模块已加载"
 fi
 
-# 确保日志目录存在并设置权限
-mkdir -p /home/user
-chown user:user /home/user
-chmod 755 /home/user
-
-# 步骤 1: 清理包管理器并安装依赖
-echo "正在清理包管理器并安装必要依赖..."
-apt-get update
-apt-get remove -y --purge fuse || true
-apt-get autoremove -y
-apt-get clean
-apt-get install -f
-apt-get install -y curl unzip fuse3
-
-# 验证依赖安装
-if ! command -v fusermount3 &> /dev/null; then
-  echo "错误：fuse3 安装失败"
-  exit 1
+# 安装rclone
+echo "=== 安装rclone ==="
+ARCH=$(uname -m)
+if [ "$ARCH" = "x86_64" ]; then
+    ARCH="amd64"
+elif [ "$ARCH" = "aarch64" ]; then
+    ARCH="arm64"
+else
+    echo "不支持的架构: $ARCH"
+    exit 1
 fi
-echo "依赖安装成功：curl, unzip, fuse3"
 
-# 步骤 2: 安装 rclone
-echo "正在安装 rclone..."
-curl https://rclone.org/install.sh | bash
+# 下载并安装rclone
+curl -O https://downloads.rclone.org/rclone-${RCLONE_VERSION}-linux-${ARCH}.zip
+unzip -q rclone-${RCLONE_VERSION}-linux-${ARCH}.zip
+cp rclone-${RCLONE_VERSION}-linux-${ARCH}/rclone /usr/bin/
+chmod 755 /usr/bin/rclone
+rm -rf rclone-${RCLONE_VERSION}-linux-${ARCH}*
 
-# 验证 rclone 安装
+# 检查安装是否成功
 if ! command -v rclone &> /dev/null; then
-  echo "错误：rclone 安装失败"
-  exit 1
-fi
-echo "rclone 安装成功，版本：$(rclone version | head -n 1)"
-
-# 步骤 3: 创建 rclone 配置文件目录
-mkdir -p "$RCLONE_CONFIG_DIR"
-chmod 600 "$RCLONE_CONFIG_DIR"
-
-# 步骤 4: 配置 rclone（WebDAV）
-echo "正在配置 rclone for WebDAV..."
-OBSCURED_PASS=$(rclone obscure "$WEBDAV_PASS")
-cat << EOF > "$RCLONE_CONFIG_FILE"
-[$REMOTE_NAME]
-type = webdav
-url = $REMOTE_URL
-vendor = other
-user = $WEBDAV_USER
-pass = $OBSCURED_PASS
-EOF
-chmod 600 "$RCLONE_CONFIG_FILE"
-
-# 验证配置文件
-if [ ! -f "$RCLONE_CONFIG_FILE" ]; then
-  echo "错误：rclone 配置文件创建失败"
-  exit 1
-fi
-echo "rclone 配置文件已生成"
-
-# 步骤 5: 测试 WebDAV 连接
-echo "正在测试 WebDAV 服务器连接..."
-if curl -s -I --user "$WEBDAV_USER:$WEBDAV_PASS" "$REMOTE_URL" | grep -q "HTTP/[0-9.]* 2[0-9]\{2\}"; then
-  echo "WebDAV 服务器可达，认证成功"
-else
-  echo "错误：无法连接到 WebDAV 服务器 $REMOTE_URL 或认证失败"
-  echo "请检查 URL、用户名或密码是否正确"
-  echo "尝试手动测试：curl -I --user $WEBDAV_USER:$WEBDAV_PASS $REMOTE_URL"
-  exit 1
+    echo "rclone安装失败"
+    exit 1
 fi
 
-# 步骤 6: 测试 WebDAV 文件列表
-echo "正在测试 WebDAV 文件列表..."
-if rclone lsd "$REMOTE_NAME:/" --log-file="$RCLONE_TEST_LOG" --log-level DEBUG; then
-  echo "WebDAV 文件列表获取成功"
-else
-  echo "错误：无法列出 WebDAV 目录，请检查 $RCLONE_TEST_LOG"
-  exit 1
-fi
-chown user:user "$RCLONE_TEST_LOG" || true
-chmod 644 "$RCLONE_TEST_LOG" || true
+echo "rclone安装成功，版本: $(rclone version | head -n 1)"
 
-# 步骤 7: 创建挂载点
-mkdir -p "$MOUNT_POINT"
-chown user:user "$MOUNT_POINT" || {
-  echo "警告：无法设置挂载点权限，请手动检查"
-  echo "挂载点: $MOUNT_POINT"
-}
+# 配置rclone webdav远程存储
+echo "=== 配置rclone webdav远程存储 ==="
+# 确保配置目录存在
+mkdir -p "$HOME/.config/rclone"
 
-# 步骤 8: 配置 fuse
-echo "正在配置 fuse..."
-if [ -f "$FUSE_CONF" ]; then
-  sed -i 's/#user_allow_other/user_allow_other/' "$FUSE_CONF" || true
-else
-  echo "user_allow_other" > "$FUSE_CONF"
-fi
-chmod 644 "$FUSE_CONF"
+# 创建或更新配置
+rclone config create ${REMOTE_NAME} ${REMOTE_TYPE} \
+    url="${WEBDAV_URL}" \
+    user="${WEBDAV_USER}" \
+    pass="${WEBDAV_PASS}" \
+    --non-interactive
 
-# 步骤 9: 创建 systemd 服务以自动挂载
-echo "正在创建 systemd 服务以自动挂载..."
-cat << EOF > /etc/systemd/system/rclone-mount.service
+# 创建挂载点并设置权限
+echo "=== 配置挂载点 ==="
+mkdir -p ${MOUNT_POINT}
+# 确保用户对挂载点有访问权限
+chown -R $SUDO_USER:$SUDO_USER ${MOUNT_POINT}
+chmod 755 ${MOUNT_POINT}
+
+# 创建systemd服务实现自动挂载和开机启动
+echo "=== 配置自动挂载 ==="
+SERVICE_FILE="/etc/systemd/system/rclone-webdav-mount.service"
+
+cat > ${SERVICE_FILE} << EOF
 [Unit]
-Description=rclone mount for WebDAV
-After=network-online.target
+Description=RClone WebDAV Mount Service
+After=network.target
 
 [Service]
 Type=simple
-User=user
-ExecStart=/usr/bin/rclone mount $REMOTE_NAME:/ $MOUNT_POINT \
+User=$SUDO_USER
+Group=$SUDO_USER
+ExecStart=/usr/bin/rclone mount ${REMOTE_NAME}: ${MOUNT_POINT} \
   --allow-other \
-  --vfs-cache-mode writes \
-  --dir-cache-time 72h \
-  --cache-dir /tmp/rclone \
-  --vfs-read-chunk-size 32M \
-  --vfs-read-chunk-size-limit off \
-  --log-file=$RCLONE_MOUNT_LOG \
-  --log-level DEBUG
-ExecStop=/bin/fusermount3 -u $MOUNT_POINT
+  --allow-non-empty \
+  --buffer-size 32M \
+  --dir-cache-time 1000h \
+  --file-cache-duration 1000h \
+  --log-level INFO \
+  --log-file /var/log/rclone-webdav.log
+
+ExecStop=/bin/fusermount3 -u ${MOUNT_POINT}
 Restart=always
-RestartSec=10
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# 步骤 10: 启用并启动服务
+# 启动并设置开机自启
 systemctl daemon-reload
-systemctl enable rclone-mount.service
-if ! systemctl start rclone-mount.service; then
-  echo "错误：systemd 服务启动失败，请检查日志"
-  echo "运行以下命令查看状态：sudo systemctl status rclone-mount.service"
-  exit 1
-fi
+systemctl start rclone-webdav-mount.service
+systemctl enable rclone-webdav-mount.service
 
-# 等待挂载完成
-sleep 10
-
-# 验证挂载
-if mountpoint -q "$MOUNT_POINT"; then
-  echo "挂载成功！WebDAV 已挂载到 $MOUNT_POINT"
-  ls -l "$MOUNT_POINT" | tee -a "$LOG_FILE"
+# 检查挂载状态
+echo "=== 安装结果 ==="
+if systemctl is-active --quiet rclone-webdav-mount.service; then
+    echo "rclone已成功安装并将webdav挂载到 ${MOUNT_POINT}"
+    echo "可以通过以下命令检查状态: systemctl status rclone-webdav-mount.service"
+    echo "日志文件: /var/log/rclone-webdav.log"
 else
-  echo "错误：挂载失败，请检查以下日志："
-  echo "- 脚本日志：$LOG_FILE"
-  echo "- rclone 挂载日志：$RCLONE_MOUNT_LOG"
-  echo "- systemd 服务状态：sudo systemctl status rclone-mount.service"
-  echo "尝试手动运行以下命令以调试："
-  echo "sudo -u user rclone mount $REMOTE_NAME:/ $MOUNT_POINT --allow-other --vfs-cache-mode writes --dir-cache-time 72h --cache-dir /tmp/rclone --vfs-read-chunk-size 32M --vfs-read-chunk-size-limit off --verbose"
-  exit 1
+    echo "rclone服务启动失败，请检查日志: /var/log/rclone-webdav.log"
+    exit 1
 fi
-chown user:user "$LOG_FILE" "$RCLONE_MOUNT_LOG" || true
-chmod 644 "$LOG_FILE" "$RCLONE_MOUNT_LOG" || true
-
-echo "rclone 安装、配置和挂载完成！日志保存在 $LOG_FILE 和 $RCLONE_MOUNT_LOG"
