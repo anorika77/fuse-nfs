@@ -15,7 +15,7 @@ REMOTE_NAME="webdav_remote"       # 自定义远程名称
 WEBDAV_URL="http://yy.19885172.xyz:19798/dav"  # WebDAV服务器地址
 WEBDAV_USER="root"                # 登录用户名
 WEBDAV_PASS="password"            # 登录密码
-MOUNT_POINT="/mnt/webdav_mount"   # 本地挂载点路径
+MOUNT_POINT="/home/user/rclone"   # 本地挂载点路径
 SERVICE_NAME="rclone-aut mount.service"  # 系统服务名称
 LOG_FILE="/var/log/rclone_mount.log"     # 日志文件路径
 
