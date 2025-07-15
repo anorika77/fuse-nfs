@@ -55,32 +55,33 @@ else
     exit 1
 fi
 
-# 下载并安装rclone，使用更可靠的方法
+# 创建临时目录处理rclone安装
+TMP_DIR=$(mktemp -d)
+echo "使用临时目录: $TMP_DIR"
+
+# 下载并安装rclone
 RCLONE_ZIP="rclone-${RCLONE_VERSION}-linux-${ARCH}.zip"
 RCLONE_URL="https://downloads.rclone.org/${RCLONE_ZIP}"
 
 echo "下载rclone: $RCLONE_URL"
-if ! curl -O --fail "$RCLONE_URL"; then
-    echo "下载rclone失败失败，请检查网络连接或URL是否正确"
+if ! curl -o "$TMP_DIR/$RCLONE_ZIP" --fail "$RCLONE_URL"; then
+    echo "下载rclone失败，请检查网络连接或URL是否正确"
+    rm -rf "$TMP_DIR"
     exit 1
 fi
 
-# 检查zip文件是否存在
-if [ ! -f "$RCLONE_ZIP" ]; then
-    echo "rclone安装包不存在: $RCLONE_ZIP"
-    exit 1
-fi
-
-# 解压并查找rclone可执行文件，自动覆盖现有文件
+# 解压文件到临时目录，自动覆盖且不交互
 echo "解压rclone安装包..."
-unzip -o -q "$RCLONE_ZIP"  # 添加-o参数自动覆盖文件，无需交互
+unzip -o -q "$TMP_DIR/$RCLONE_ZIP" -d "$TMP_DIR"
 
-# 查找解压后的目录（处理可能的版本号变化）
-RCLONE_DIR=$(find . -maxdepth 1 -type d -name "rclone-*-linux-${ARCH}" | head -n 1)
+# 查找解压后的目录
+RCLONE_DIR=$(find "$TMP_DIR" -maxdepth 1 -type d -name "rclone-*-linux-${ARCH}" | head -n 1)
 
 if [ -z "$RCLONE_DIR" ]; then
     echo "找不到rclone解压目录"
-    ls -l  # 列出当前目录内容帮助调试
+    echo "临时目录内容:"
+    ls -l "$TMP_DIR"
+    rm -rf "$TMP_DIR"
     exit 1
 fi
 
@@ -89,14 +90,19 @@ echo "找到rclone目录: $RCLONE_DIR"
 # 检查rclone可执行文件是否存在
 if [ ! -f "${RCLONE_DIR}/rclone" ]; then
     echo "rclone可执行文件不存在于解压目录中"
-    ls -l "$RCLONE_DIR"  # 列出目录内容帮助调试
+    echo "rclone目录内容:"
+    ls -l "$RCLONE_DIR"
+    rm -rf "$TMP_DIR"
     exit 1
 fi
 
 # 安装rclone
+echo "安装rclone到/usr/bin..."
 cp "${RCLONE_DIR}/rclone" /usr/bin/
 chmod 755 /usr/bin/rclone
-rm -rf "$RCLONE_ZIP" "$RCLONE_DIR"
+
+# 清理临时文件
+rm -rf "$TMP_DIR"
 
 # 检查安装是否成功
 if ! command -v rclone &> /dev/null; then
