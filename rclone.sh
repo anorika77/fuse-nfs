@@ -13,6 +13,8 @@ DAV_USER="root"
 DAV_PASS="password"
 MOUNT_POINT="/home/user/rclone"
 LOG_PATH="/home/user/Downloads/rclone_mount.log"
+# 显式指定rclone路径，避免环境变量问题
+RCLONE_PATH="/usr/local/bin/rclone"
 
 # 检查是否以root权限运行
 if [ "$(id -u)" -ne 0 ]; then
@@ -30,17 +32,11 @@ if [ $? -ne 0 ]; then
 fi
 
 # 检查rclone是否已安装
-if ! command -v rclone &> /dev/null; then
+if [ ! -f "$RCLONE_PATH" ]; then
     echo -e "${YELLOW}rclone未安装，开始安装...${NC}"
     
-    # 下载最新版rclone
-    echo -e "${YELLOW}正在获取最新rclone版本...${NC}"
-    RCLONE_VERSION=$(curl -s https://api.github.com/repos/rclone/rclone/releases/latest | grep -oP '"tag_name": "\K(.*)(?=")')
-    if [ -z "$RCLONE_VERSION" ]; then
-        echo -e "${RED}无法获取rclone版本信息，使用备用版本v1.65.0${NC}"
-        RCLONE_VERSION="v1.65.0"
-    fi
-    
+    # 下载最新版rclone，使用固定版本避免API问题
+    RCLONE_VERSION="v1.65.0"
     echo -e "${YELLOW}正在下载rclone $RCLONE_VERSION...${NC}"
     wget https://github.com/rclone/rclone/releases/download/$RCLONE_VERSION/rclone-$RCLONE_VERSION-linux-amd64.zip -O /tmp/rclone.zip
     if [ $? -ne 0 ]; then
@@ -48,7 +44,7 @@ if ! command -v rclone &> /dev/null; then
         exit 1
     fi
     
-    # 解压并安装
+    # 解压并安装到指定路径
     echo -e "${YELLOW}正在安装rclone...${NC}"
     unzip /tmp/rclone.zip -d /tmp
     if [ $? -ne 0 ]; then
@@ -56,14 +52,17 @@ if ! command -v rclone &> /dev/null; then
         exit 1
     fi
     
-    cp /tmp/rclone-*-linux-amd64/rclone /usr/bin/
-    chmod 755 /usr/bin/rclone
+    cp /tmp/rclone-*-linux-amd64/rclone "$RCLONE_PATH"
+    chmod 755 "$RCLONE_PATH"
     
     # 验证安装
-    if ! command -v rclone &> /dev/null; then
+    if [ ! -f "$RCLONE_PATH" ]; then
         echo -e "${RED}rclone安装失败，请手动安装${NC}"
         exit 1
     fi
+    
+    # 创建符号链接到/usr/bin确保可访问
+    ln -s "$RCLONE_PATH" /usr/bin/rclone 2>/dev/null
     
     # 清理临时文件
     rm -rf /tmp/rclone.zip /tmp/rclone-*-linux-amd64
@@ -91,7 +90,7 @@ fi
 # 创建rclone配置目录
 mkdir -p /root/.config/rclone/
 
-# 生成rclone配置文件
+# 生成rclone配置文件，使用显式路径
 echo -e "${YELLOW}配置rclone...${NC}"
 cat > /root/.config/rclone/rclone.conf << EOF
 [$DAV_NAME]
@@ -99,7 +98,7 @@ type = webdav
 url = $DAV_URL
 vendor = other
 user = $DAV_USER
-pass = $(echo -n "$DAV_PASS" | rclone obscure -)
+pass = $("$RCLONE_PATH" obscure "$DAV_PASS")
 EOF
 
 # 创建挂载点
@@ -113,13 +112,13 @@ mkdir -p $(dirname $LOG_PATH)
 touch $LOG_PATH
 chown $SUDO_USER:$SUDO_USER $LOG_PATH
 
-# 创建自动挂载脚本
+# 创建自动挂载脚本，使用显式rclone路径
 echo -e "${YELLOW}创建自动挂载脚本...${NC}"
 cat > /usr/local/bin/mount_webdav.sh << EOF
 #!/bin/bash
 # 检查是否已挂载
 if ! mountpoint -q $MOUNT_POINT; then
-    rclone mount $DAV_NAME: $MOUNT_POINT --daemon --vfs-cache-mode writes --allow-other
+    $RCLONE_PATH mount $DAV_NAME: $MOUNT_POINT --daemon --vfs-cache-mode writes --allow-other
     if [ \$? -eq 0 ]; then
         echo "$(date): 成功挂载 $DAV_NAME 到 $MOUNT_POINT" >> $LOG_PATH
     else
@@ -134,12 +133,8 @@ chmod +x /usr/local/bin/mount_webdav.sh
 
 # 设置开机自动挂载
 echo -e "${YELLOW}配置开机自动挂载...${NC}"
-# 添加到rc.local（如果存在）
-if [ -f /etc/rc.local ]; then
-    sed -i '/exit 0/i /usr/local/bin/mount_webdav.sh' /etc/rc.local
-else
-    # 创建systemd服务
-    cat > /etc/systemd/system/rclone-mount.service << EOF
+# 创建systemd服务，确保使用正确路径
+cat > /etc/systemd/system/rclone-mount.service << EOF
 [Unit]
 Description=RClone WebDAV Mount
 After=network.target
@@ -154,9 +149,9 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-    systemctl enable rclone-mount
-    systemctl start rclone-mount
-fi
+systemctl daemon-reload
+systemctl enable rclone-mount
+systemctl start rclone-mount
 
 # 立即挂载
 echo -e "${YELLOW}正在挂载WebDAV...${NC}"
@@ -172,7 +167,7 @@ if mountpoint -q $MOUNT_POINT; then
     echo -e "  3. 重启服务: systemctl restart rclone-mount"
 else
     echo -e "${RED}WebDAV挂载失败，请检查配置信息和网络连接${NC}"
-    echo -e "${YELLOW}尝试手动挂载以查看详细错误: rclone mount $DAV_NAME: $MOUNT_POINT --vfs-cache-mode writes --allow-other${NC}"
+    echo -e "${YELLOW}尝试手动挂载以查看详细错误: $RCLONE_PATH mount $DAV_NAME: $MOUNT_POINT --vfs-cache-mode writes --allow-other${NC}"
     echo -e "${YELLOW}查看日志获取更多信息: tail -f $LOG_PATH${NC}"
     exit 1
 fi
