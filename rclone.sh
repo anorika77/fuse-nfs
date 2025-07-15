@@ -13,13 +13,23 @@ DAV_USER="root"
 DAV_PASS="password"
 MOUNT_POINT="/home/user/rclone"
 LOG_PATH="/home/user/Downloads/rclone_mount.log"
-# 显式指定rclone路径，避免环境变量问题
 RCLONE_PATH="/usr/local/bin/rclone"
 
 # 检查是否以root权限运行
 if [ "$(id -u)" -ne 0 ]; then
     echo -e "${RED}请使用sudo或root权限运行此脚本${NC}" >&2
     exit 1
+fi
+
+# 清理旧的挂载状态
+echo -e "${YELLOW}清理旧的挂载状态...${NC}"
+# 强制卸载可能残留的挂载
+fusermount -u "$MOUNT_POINT" 2>/dev/null
+umount -l "$MOUNT_POINT" 2>/dev/null  # 懒卸载，即使设备未响应
+# 删除异常的挂载点目录
+if [ -d "$MOUNT_POINT" ]; then
+    rm -rf "$MOUNT_POINT"
+    echo -e "${YELLOW}已删除异常的挂载点目录${NC}"
 fi
 
 # 安装必要依赖
@@ -35,7 +45,6 @@ fi
 if [ ! -f "$RCLONE_PATH" ]; then
     echo -e "${YELLOW}rclone未安装，开始安装...${NC}"
     
-    # 下载最新版rclone，使用固定版本避免API问题
     RCLONE_VERSION="v1.65.0"
     echo -e "${YELLOW}正在下载rclone $RCLONE_VERSION...${NC}"
     wget https://github.com/rclone/rclone/releases/download/$RCLONE_VERSION/rclone-$RCLONE_VERSION-linux-amd64.zip -O /tmp/rclone.zip
@@ -44,7 +53,6 @@ if [ ! -f "$RCLONE_PATH" ]; then
         exit 1
     fi
     
-    # 解压并安装到指定路径
     echo -e "${YELLOW}正在安装rclone...${NC}"
     unzip /tmp/rclone.zip -d /tmp
     if [ $? -ne 0 ]; then
@@ -54,22 +62,33 @@ if [ ! -f "$RCLONE_PATH" ]; then
     
     cp /tmp/rclone-*-linux-amd64/rclone "$RCLONE_PATH"
     chmod 755 "$RCLONE_PATH"
+    ln -s "$RCLONE_PATH" /usr/bin/rclone 2>/dev/null
     
-    # 验证安装
     if [ ! -f "$RCLONE_PATH" ]; then
         echo -e "${RED}rclone安装失败，请手动安装${NC}"
         exit 1
     fi
     
-    # 创建符号链接到/usr/bin确保可访问
-    ln -s "$RCLONE_PATH" /usr/bin/rclone 2>/dev/null
-    
-    # 清理临时文件
     rm -rf /tmp/rclone.zip /tmp/rclone-*-linux-amd64
-    
     echo -e "${GREEN}rclone安装完成${NC}"
 else
     echo -e "${GREEN}rclone已安装，跳过安装步骤${NC}"
+fi
+
+# 验证WebDAV连接
+echo -e "${YELLOW}测试WebDAV连接...${NC}"
+TEST_OUTPUT=$("$RCLONE_PATH" lsd "$DAV_NAME:" 2>&1)
+if [ $? -ne 0 ]; then
+    echo -e "${YELLOW}WebDAV连接测试失败，错误信息:${NC}"
+    echo "$TEST_OUTPUT"
+    read -p "是否继续配置？(y/n) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo -e "${RED}用户取消了操作${NC}"
+        exit 1
+    fi
+else
+    echo -e "${GREEN}WebDAV连接测试成功${NC}"
 fi
 
 # 显示预配置信息供用户确认
@@ -90,7 +109,7 @@ fi
 # 创建rclone配置目录
 mkdir -p /root/.config/rclone/
 
-# 生成rclone配置文件，使用显式路径
+# 生成rclone配置文件
 echo -e "${YELLOW}配置rclone...${NC}"
 cat > /root/.config/rclone/rclone.conf << EOF
 [$DAV_NAME]
@@ -101,24 +120,29 @@ user = $DAV_USER
 pass = $("$RCLONE_PATH" obscure "$DAV_PASS")
 EOF
 
-# 创建挂载点
+# 重新创建干净的挂载点
 echo -e "${YELLOW}创建挂载点: $MOUNT_POINT${NC}"
-mkdir -p $MOUNT_POINT
-# 设置权限，确保普通用户可访问
-chown -R $SUDO_USER:$SUDO_USER $MOUNT_POINT
+mkdir -p "$MOUNT_POINT"
+# 确保目录权限正确
+chown -R $SUDO_USER:$SUDO_USER "$MOUNT_POINT"
+if [ $? -ne 0 ]; then
+    echo -e "${RED}挂载点权限设置失败，请手动检查目录权限${NC}"
+    exit 1
+fi
 
 # 创建日志文件目录
-mkdir -p $(dirname $LOG_PATH)
-touch $LOG_PATH
-chown $SUDO_USER:$SUDO_USER $LOG_PATH
+mkdir -p $(dirname "$LOG_PATH")
+touch "$LOG_PATH"
+chown $SUDO_USER:$SUDO_USER "$LOG_PATH"
 
-# 创建自动挂载脚本，使用显式rclone路径
+# 创建自动挂载脚本（增加调试输出）
 echo -e "${YELLOW}创建自动挂载脚本...${NC}"
 cat > /usr/local/bin/mount_webdav.sh << EOF
 #!/bin/bash
 # 检查是否已挂载
 if ! mountpoint -q $MOUNT_POINT; then
-    $RCLONE_PATH mount $DAV_NAME: $MOUNT_POINT --daemon --vfs-cache-mode writes --allow-other
+    # 增加详细日志输出
+    $RCLONE_PATH mount $DAV_NAME: $MOUNT_POINT --daemon --vfs-cache-mode writes --allow-other --log-file $LOG_PATH --log-level INFO
     if [ \$? -eq 0 ]; then
         echo "$(date): 成功挂载 $DAV_NAME 到 $MOUNT_POINT" >> $LOG_PATH
     else
@@ -131,9 +155,8 @@ EOF
 
 chmod +x /usr/local/bin/mount_webdav.sh
 
-# 设置开机自动挂载
-echo -e "${YELLOW}配置开机自动挂载...${NC}"
-# 创建systemd服务，确保使用正确路径
+# 重新配置systemd服务
+echo -e "${YELLOW}重新配置开机自动挂载...${NC}"
 cat > /etc/systemd/system/rclone-mount.service << EOF
 [Unit]
 Description=RClone WebDAV Mount
@@ -151,23 +174,24 @@ EOF
 
 systemctl daemon-reload
 systemctl enable rclone-mount
-systemctl start rclone-mount
+systemctl restart rclone-mount
 
-# 立即挂载
-echo -e "${YELLOW}正在挂载WebDAV...${NC}"
-/usr/local/bin/mount_webdav.sh
+# 立即挂载（带调试信息）
+echo -e "${YELLOW}正在挂载WebDAV（带调试信息）...${NC}"
+$RCLONE_PATH mount "$DAV_NAME:" "$MOUNT_POINT" --vfs-cache-mode writes --allow-other --log-file "$LOG_PATH" --log-level INFO &
+sleep 5  # 等待挂载完成
 
 # 检查挂载状态
-if mountpoint -q $MOUNT_POINT; then
+if mountpoint -q "$MOUNT_POINT"; then
     echo -e "${GREEN}WebDAV已成功挂载到 $MOUNT_POINT${NC}"
     echo -e "${GREEN}rclone配置完成！${NC}"
     echo -e "${YELLOW}使用说明:${NC}"
     echo -e "  1. 访问挂载点: cd $MOUNT_POINT"
-    echo -e "  2. 查看日志: tail -f $LOG_PATH"
+    echo -e "  2. 查看详细日志: tail -f $LOG_PATH"
     echo -e "  3. 重启服务: systemctl restart rclone-mount"
 else
     echo -e "${RED}WebDAV挂载失败，请检查配置信息和网络连接${NC}"
-    echo -e "${YELLOW}尝试手动挂载以查看详细错误: $RCLONE_PATH mount $DAV_NAME: $MOUNT_POINT --vfs-cache-mode writes --allow-other${NC}"
-    echo -e "${YELLOW}查看日志获取更多信息: tail -f $LOG_PATH${NC}"
+    echo -e "${YELLOW}详细错误日志已记录到: $LOG_PATH${NC}"
+    echo -e "${YELLOW}尝试手动挂载（带详细调试）: $RCLONE_PATH mount $DAV_NAME: $MOUNT_POINT --vfs-cache-mode writes --allow-other --vv${NC}"
     exit 1
 fi
