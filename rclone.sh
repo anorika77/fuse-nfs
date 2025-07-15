@@ -22,21 +22,48 @@ fi
 
 # 安装必要依赖
 echo -e "${YELLOW}安装必要依赖...${NC}"
-apt update -y > /dev/null
-apt install -y fuse3 wget unzip > /dev/null
+apt update -y
+apt install -y fuse3 wget unzip curl grep sed > /dev/null
+if [ $? -ne 0 ]; then
+    echo -e "${RED}依赖安装失败，请检查网络连接${NC}"
+    exit 1
+fi
 
 # 检查rclone是否已安装
 if ! command -v rclone &> /dev/null; then
     echo -e "${YELLOW}rclone未安装，开始安装...${NC}"
     
     # 下载最新版rclone
+    echo -e "${YELLOW}正在获取最新rclone版本...${NC}"
     RCLONE_VERSION=$(curl -s https://api.github.com/repos/rclone/rclone/releases/latest | grep -oP '"tag_name": "\K(.*)(?=")')
-    wget -q https://github.com/rclone/rclone/releases/download/$RCLONE_VERSION/rclone-$RCLONE_VERSION-linux-amd64.zip -O /tmp/rclone.zip
+    if [ -z "$RCLONE_VERSION" ]; then
+        echo -e "${RED}无法获取rclone版本信息，使用备用版本v1.65.0${NC}"
+        RCLONE_VERSION="v1.65.0"
+    fi
+    
+    echo -e "${YELLOW}正在下载rclone $RCLONE_VERSION...${NC}"
+    wget https://github.com/rclone/rclone/releases/download/$RCLONE_VERSION/rclone-$RCLONE_VERSION-linux-amd64.zip -O /tmp/rclone.zip
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}rclone下载失败，请检查网络连接${NC}"
+        exit 1
+    fi
     
     # 解压并安装
-    unzip -q /tmp/rclone.zip -d /tmp
+    echo -e "${YELLOW}正在安装rclone...${NC}"
+    unzip /tmp/rclone.zip -d /tmp
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}rclone解压失败${NC}"
+        exit 1
+    fi
+    
     cp /tmp/rclone-*-linux-amd64/rclone /usr/bin/
     chmod 755 /usr/bin/rclone
+    
+    # 验证安装
+    if ! command -v rclone &> /dev/null; then
+        echo -e "${RED}rclone安装失败，请手动安装${NC}"
+        exit 1
+    fi
     
     # 清理临时文件
     rm -rf /tmp/rclone.zip /tmp/rclone-*-linux-amd64
@@ -145,6 +172,7 @@ if mountpoint -q $MOUNT_POINT; then
     echo -e "  3. 重启服务: systemctl restart rclone-mount"
 else
     echo -e "${RED}WebDAV挂载失败，请检查配置信息和网络连接${NC}"
+    echo -e "${YELLOW}尝试手动挂载以查看详细错误: rclone mount $DAV_NAME: $MOUNT_POINT --vfs-cache-mode writes --allow-other${NC}"
     echo -e "${YELLOW}查看日志获取更多信息: tail -f $LOG_PATH${NC}"
     exit 1
 fi
