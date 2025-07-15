@@ -17,7 +17,8 @@ fi
 # 定义变量
 RCLONE_CONFIG_DIR="/root/.config/rclone"
 RCLONE_CONFIG_FILE="$RCLONE_CONFIG_DIR/rclone.conf"
-CURRENT_USER=$(whoami)
+CURRENT_USER=$(logname 2>/dev/null || echo $SUDO_USER)
+[ -z "$CURRENT_USER" ] && CURRENT_USER=$(whoami)
 MOUNT_POINT="/home/$CURRENT_USER/rclone"
 REMOTE_NAME="test"
 REMOTE_URL="http://yy.19885172.xyz:19798/dav"
@@ -54,6 +55,7 @@ echo "rclone 安装成功，版本：$(rclone version | head -n 1)"
 
 # 步骤 3: 创建 rclone 配置文件目录
 mkdir -p "$RCLONE_CONFIG_DIR"
+chmod 600 "$RCLONE_CONFIG_DIR"
 
 # 步骤 4: 配置 rclone（WebDAV）
 echo "正在配置 rclone for WebDAV..."
@@ -66,6 +68,7 @@ vendor = other
 user = $WEBDAV_USER
 pass = $OBSCURED_PASS
 EOF
+chmod 600 "$RCLONE_CONFIG_FILE"
 
 # 验证配置文件
 if [ ! -f "$RCLONE_CONFIG_FILE" ]; then
@@ -76,22 +79,32 @@ echo "rclone 配置文件已生成"
 
 # 步骤 5: 测试 WebDAV 连接
 echo "正在测试 WebDAV 服务器连接..."
-if curl -s -I --user "$WEBDAV_USER:$WEBDAV_PASS" "$REMOTE_URL" | grep -q "HTTP/"; then
-  echo "WebDAV 服务器可达"
+if curl -s -I --user "$WEBDAV_USER:$WEBDAV_PASS" "$REMOTE_URL" | grep -q "HTTP/[0-9.]* 2[0-9]\{2\}"; then
+  echo "WebDAV 服务器可达，认证成功"
 else
-  echo "错误：无法连接到 WebDAV 服务器 $REMOTE_URL"
+  echo "错误：无法连接到 WebDAV 服务器 $REMOTE_URL 或认证失败"
   echo "请检查 URL、用户名或密码是否正确"
+  echo "尝试手动测试：curl -I --user $WEBDAV_USER:$WEBDAV_PASS $REMOTE_URL"
   exit 1
 fi
 
-# 步骤 6: 创建挂载点
+# 步骤 6: 测试 WebDAV 文件列表
+echo "正在测试 WebDAV 文件列表..."
+if rclone lsd "$REMOTE_NAME:/" --log-file=/var/log/rclone_test.log --log-level DEBUG; then
+  echo "WebDAV 文件列表获取成功"
+else
+  echo "错误：无法列出 WebDAV 目录，请检查 /var/log/rclone_test.log"
+  exit 1
+fi
+
+# 步骤 7: 创建挂载点
 mkdir -p "$MOUNT_POINT"
 chown "$CURRENT_USER:$CURRENT_USER" "$MOUNT_POINT" || {
   echo "警告：无法设置挂载点权限，请手动检查"
-  echo "尝试使用当前用户: $CURRENT_USER"
+  echo "当前用户: $CURRENT_USER，挂载点: $MOUNT_POINT"
 }
 
-# 步骤 7: 配置 fuse
+# 步骤 8: 配置 fuse
 echo "正在配置 fuse..."
 if [ -f "$FUSE_CONF" ]; then
   sed -i 's/#user_allow_other/user_allow_other/' "$FUSE_CONF" || true
@@ -100,7 +113,7 @@ else
 fi
 chmod 644 "$FUSE_CONF"
 
-# 步骤 8: 创建 systemd 服务以自动挂载
+# 步骤 9: 创建 systemd 服务以自动挂载
 echo "正在创建 systemd 服务以自动挂载..."
 cat << EOF > /etc/systemd/system/rclone-mount.service
 [Unit]
@@ -127,24 +140,25 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-# 步骤 9: 启用并启动服务
+# 步骤 10: 启用并启动服务
 systemctl daemon-reload
 systemctl enable rclone-mount.service
 systemctl start rclone-mount.service
 
 # 等待挂载完成
-sleep 5
+sleep 10
 
 # 验证挂载
 if mountpoint -q "$MOUNT_POINT"; then
   echo "挂载成功！WebDAV 已挂载到 $MOUNT_POINT"
+  ls -l "$MOUNT_POINT" | tee -a "$LOG_FILE"
 else
   echo "错误：挂载失败，请检查以下日志："
   echo "- 脚本日志：$LOG_FILE"
   echo "- rclone 挂载日志：/var/log/rclone_mount.log"
+  echo "- systemd 服务状态：sudo systemctl status rclone-mount.service"
   echo "尝试手动运行以下命令以调试："
-  echo "rclone mount $REMOTE_NAME:/ $MOUNT_POINT --allow-other --vfs-cache-mode writes --dir-cache-time 72h --cache-dir /tmp/rclone --vfs-read-chunk-size 32M --vfs-read-chunk-size-limit off --verbose"
-  echo "systemd 服务状态：sudo systemctl status rclone-mount.service"
+  echo "sudo -u $CURRENT_USER rclone mount $REMOTE_NAME:/ $MOUNT_POINT --allow-other --vfs-cache-mode writes --dir-cache-time 72h --cache-dir /tmp/rclone --vfs-read-chunk-size 32M --vfs-read-chunk-size-limit off --verbose"
   exit 1
 fi
 
