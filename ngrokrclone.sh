@@ -1,6 +1,6 @@
-#!/usr/bin/env bash
-# 整合脚本：自动配置ngrok SSH隧道 + rclone WebDAV挂载
-# 版本：1.0
+#!/bin/bash
+# 功能：全自动安装Rclone并配置WebDAV自动挂载（支持开机启动）
+# 适配系统：Ubuntu 18.04+/Debian 10+/CentOS 7+/Rocky Linux
 
 # 颜色定义
 RED='\033[0;31m'
@@ -11,281 +11,231 @@ NC='\033[0m'
 # ==============================================
 # 配置参数（可根据需求修改）
 # ==============================================
-# ngrok配置
-NGROK_TOKEN="2LOavNAh6AsUHCU6AOZhfVMgx32_6mHSA88CTSMK2E4rb4c8c"  # ngrok token
-SSH_ROOT_PASSWORD="Yanchen517200@"                             # SSH root密码
-
-# rclone WebDAV配置
-RCLONE_REMOTE_NAME="test"                                       # 远程名称
-RCLONE_WEBDAV_URL="http://yy.19885172.xyz:19798/dav"            # WebDAV地址
-RCLONE_USER="root"                                              # WebDAV用户名
-RCLONE_PASS="password"                                          # WebDAV密码
-RCLONE_MOUNT_POINT="/home/user/rclone"                          # 挂载点
-RCLONE_SERVICE="rclone-webdav.service"                          # rclone服务名
+REMOTE_NAME="webdav_remote"       # 自定义远程名称
+WEBDAV_URL="http://yy.19885172.xyz:19798/dav"  # WebDAV服务器地址
+WEBDAV_USER="root"                # 登录用户名
+WEBDAV_PASS="password"            # 登录密码
+MOUNT_POINT="/mnt/webdav_mount"   # 本地挂载点路径
+SERVICE_NAME="rclone-aut mount.service"  # 系统服务名称
+LOG_FILE="/var/log/rclone_mount.log"     # 日志文件路径
 
 # ==============================================
-# 通用工具函数
+# 阶段1：环境检查与依赖安装
 # ==============================================
 # 检查root权限
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
-        echo -e "${RED}错误：请用root权限运行（sudo bash $0）${NC}"
+        echo -e "${RED}错误：必须使用root权限运行（sudo bash $0）${NC}"
         exit 1
     fi
 }
 
-# 安装基础依赖（curl、fuse3等共用依赖）
-install_common_deps() {
-    echo -e "${YELLOW}[1/10] 安装基础依赖...${NC}"
+# 检测操作系统
+detect_os() {
     if [ -f /etc/debian_version ]; then
-        # Ubuntu/Debian
-        apt-get update -y >/dev/null 2>&1
-        apt-get install -y curl fuse3 sudo openssh-server >/dev/null 2>&1
+        echo "debian"
     elif [ -f /etc/redhat-release ]; then
-        # CentOS/RHEL
-        yum install -y curl fuse3 sudo openssh-server >/dev/null 2>&1
+        echo "rhel"
     else
-        echo -e "${RED}不支持的Linux发行版！${NC}"
-        exit 1
+        echo "unknown"
     fi
+}
 
-    # 验证关键依赖
-    for cmd in curl fuse3 sudo sshd; do
+# 安装核心依赖
+install_deps() {
+    echo -e "${YELLOW}[1/8] 安装依赖...${NC}"
+    OS=$(detect_os)
+    case $OS in
+        "debian")
+            apt-get update -y >/dev/null 2>&1
+            apt-get install -y curl fuse3 >/dev/null 2>&1
+            ;;
+        "rhel")
+            yum install -y curl fuse3 >/dev/null 2>&1
+            ;;
+        "unknown")
+            echo -e "${RED}不支持的操作系统！${NC}"
+            exit 1
+            ;;
+    esac
+
+    # 验证依赖
+    for cmd in curl fusermount3; do
         if ! command -v $cmd &>/dev/null; then
             echo -e "${RED}依赖$cmd安装失败！${NC}"
             exit 1
         fi
     done
-    echo -e "${GREEN}[✓] 基础依赖安装完成${NC}"
+    echo -e "${GREEN}[✓] 依赖安装完成${NC}"
 }
 
 # ==============================================
-# ngrok 相关配置（SSH隧道）
+# 阶段2：安装Rclone
 # ==============================================
-# 配置SSH服务
-configure_ssh() {
-    echo -e "${YELLOW}[2/10] 配置SSH服务...${NC}"
-    # 设置root密码
-    echo "root:$SSH_ROOT_PASSWORD" | chpasswd
-
-    # 允许root登录和密码认证
-    sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-    sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
-    systemctl restart sshd >/dev/null 2>&1
-
-    if systemctl is-active --quiet sshd; then
-        echo -e "${GREEN}[✓] SSH服务配置完成${NC}"
-    else
-        echo -e "${RED}SSH服务启动失败！${NC}"
-        exit 1
-    fi
-}
-
-# 安装并配置ngrok
-install_ngrok() {
-    echo -e "${YELLOW}[3/10] 安装配置ngrok...${NC}"
-    # 下载ngrok客户端
-    wget https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz -qO- | tar xz -C /usr/local/bin
-    chmod +x /usr/local/bin/ngrok
-
-    # 测试ngrok连接
-    TEST_LOG="/tmp/ngrok_test.log"
-    ngrok tcp 22 --authtoken="$NGROK_TOKEN" > "$TEST_LOG" 2>&1 &
-    TEST_PID=$!
-    sleep 3
-
-    # 检查测试结果
-    if grep -q "You must add a credit or debit card" "$TEST_LOG"; then
-        kill $TEST_PID >/dev/null 2>&1
-        echo -e "${RED}ngrok错误：免费账户需绑定信用卡验证！${NC}"
-        rm -f "$TEST_LOG"
-        # 不退出，继续执行rclone部分
-    elif grep -q "failed to start tunnel" "$TEST_LOG"; then
-        kill $TEST_PID >/dev/null 2>&1
-        echo -e "${RED}ngrok连接失败，检查token是否有效！${NC}"
-        rm -f "$TEST_LOG"
-    else
-        kill $TEST_PID >/dev/null 2>&1
-        echo -e "${GREEN}[✓] ngrok测试通过${NC}"
-    fi
-    rm -f "$TEST_LOG"
-
-    # 后台启动ngrok
-    pkill -f "ngrok tcp 22" >/dev/null 2>&1
-    nohup ngrok tcp 22 --authtoken="$NGROK_TOKEN" >/var/log/ngrok.log 2>&1 &
-    sleep 5
-    echo -e "${YELLOW}ngrok已后台运行，日志：/var/log/ngrok.log${NC}"
-}
-
-# 获取ngrok隧道信息
-get_ngrok_info() {
-    echo -e "${YELLOW}[4/10] 获取ngrok隧道信息...${NC}"
-    NGROK_PID=$(pgrep -f "ngrok tcp 22")
-    if [ -z "$NGROK_PID" ]; then
-        echo -e "${RED}ngrok未运行！${NC}"
-        return
-    fi
-
-    # 获取API端口
-    NGROK_API_PORT=$(lsof -p "$NGROK_PID" 2>/dev/null | grep "LISTEN" | grep "localhost:" | awk -F":" '{print $2}' | awk '{print $1}')
-    NGROK_API_PORT=${NGROK_API_PORT:-4040}
-
-    # 获取隧道地址
-    NGROK_INFO=$(curl -s "http://localhost:$NGROK_API_PORT/api/tunnels")
-    NGROK_URL=$(echo "$NGROK_INFO" | grep -oP 'tcp://\K[^"]+')
-    if [ -n "$NGROK_URL" ]; then
-        NGROK_HOST=$(echo "$NGROK_URL" | cut -d: -f1)
-        NGROK_PORT=$(echo "$NGROK_URL" | cut -d: -f2)
-        echo -e "${GREEN}[✓] ngrok隧道信息：${NC}"
-        echo -e "  SSH地址：$NGROK_HOST"
-        echo -e "  SSH端口：$NGROK_PORT"
-        echo -e "  连接命令：ssh root@$NGROK_HOST -p $NGROK_PORT"
-        echo -e "  密码：$SSH_ROOT_PASSWORD"
-    else
-        echo -e "${YELLOW}暂未获取到ngrok隧道信息，稍后查看日志：/var/log/ngrok.log${NC}"
-    fi
-}
-
-# ==============================================
-# rclone 相关配置（WebDAV挂载）
-# ==============================================
-# 安装rclone
 install_rclone() {
-    echo -e "\n${YELLOW}[5/10] 安装rclone...${NC}"
+    echo -e "${YELLOW}[2/8] 安装Rclone...${NC}"
     if ! command -v rclone &>/dev/null; then
+        # 官方安装脚本
         curl https://rclone.org/install.sh | bash >/dev/null 2>&1
     fi
     if command -v rclone &>/dev/null; then
-        echo -e "${GREEN}[✓] rclone安装完成（版本：$(rclone --version | head -n1 | awk '{print $2}')）${NC}"
+        echo -e "${GREEN}[✓] Rclone已安装（版本：$(rclone --version | head -n1 | awk '{print $2}')）${NC}"
     else
-        echo -e "${RED}rclone安装失败！${NC}"
+        echo -e "${RED}Rclone安装失败！${NC}"
         exit 1
     fi
 }
 
-# 配置WebDAV远程
-configure_rclone_webdav() {
-    echo -e "${YELLOW}[6/10] 配置WebDAV远程...${NC}"
-    # 创建user用户（rclone用）
-    if ! id "user" &>/dev/null; then
-        useradd -m user
-    fi
-
-    # 配置文件
-    CONFIG_DIR="/home/user/.config/rclone"
+# ==============================================
+# 阶段3：配置WebDAV远程
+# ==============================================
+configure_remote() {
+    echo -e "${YELLOW}[3/8] 配置WebDAV远程...${NC}"
+    # 创建配置目录
+    CONFIG_DIR="/root/.config/rclone"  # 使用root用户配置（避免权限问题）
     mkdir -p "$CONFIG_DIR"
-    chown -R user:user "$CONFIG_DIR"
 
-    OBSCURED_PASS=$(echo "$RCLONE_PASS" | rclone obscure -)
+    # 加密密码
+    OBSCURED_PASS=$(echo "$WEBDAV_PASS" | rclone obscure -)
+
+    # 生成配置文件
     cat > "$CONFIG_DIR/rclone.conf" << EOF
-[$RCLONE_REMOTE_NAME]
+[$REMOTE_NAME]
 type = webdav
-url = $RCLONE_WEBDAV_URL
-vendor = other
-user = $RCLONE_USER
+url = $WEBDAV_URL
+vendor = other  # 通用WebDAV类型
+user = $WEBDAV_USER
 pass = $OBSCURED_PASS
 EOF
-    chown user:user "$CONFIG_DIR/rclone.conf"
-    chmod 600 "$CONFIG_DIR/rclone.conf"
 
-    # 测试WebDAV连接
-    if ! sudo -u user rclone lsd "$RCLONE_REMOTE_NAME:" >/dev/null 2>&1; then
-        echo -e "${RED}WebDAV连接失败，检查URL/账号密码！${NC}"
-        sudo -u user rclone lsd "$RCLONE_REMOTE_NAME:"  # 显示错误
-        # 不退出，继续配置
+    # 测试远程连接
+    if rclone lsd "$REMOTE_NAME:" >/dev/null 2>&1; then
+        echo -e "${GREEN}[✓] WebDAV远程配置成功${NC}"
     else
-        echo -e "${GREEN}[✓] WebDAV配置完成${NC}"
+        echo -e "${RED}WebDAV连接失败！请检查URL/账号密码${NC}"
+        rclone lsd "$REMOTE_NAME:"  # 显示错误详情
+        exit 1
     fi
 }
 
-# 准备rclone挂载点
-prepare_rclone_mount() {
-    echo -e "${YELLOW}[7/10] 准备rclone挂载点...${NC}"
-    mkdir -p "$RCLONE_MOUNT_POINT"
-    chown -R user:user "$RCLONE_MOUNT_POINT"
+# ==============================================
+# 阶段4：准备挂载点
+# ==============================================
+prepare_mount_point() {
+    echo -e "${YELLOW}[4/8] 准备挂载点...${NC}"
+    # 创建挂载目录
+    mkdir -p "$MOUNT_POINT"
+    # 设置权限（允许所有用户访问）
+    chmod 777 "$MOUNT_POINT"
 
-    # 启用fuse权限
+    # 启用FUSE允许其他用户访问
     sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf 2>/dev/null
-    echo -e "${GREEN}[✓] 挂载点$RCLONE_MOUNT_POINT准备完成${NC}"
+    echo -e "${GREEN}[✓] 挂载点$MOUNT_POINT准备完成${NC}"
 }
 
-# 创建rclone系统服务
-create_rclone_service() {
-    echo -e "${YELLOW}[8/10] 创建rclone服务...${NC}"
-    SERVICE_FILE="/etc/systemd/system/$RCLONE_SERVICE"
+# ==============================================
+# 阶段5：配置自动挂载服务（systemd）
+# ==============================================
+create_systemd_service() {
+    echo -e "${YELLOW}[5/8] 创建自动挂载服务...${NC}"
+    SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME"
+
+    # 生成服务文件
     cat > "$SERVICE_FILE" << EOF
 [Unit]
-Description=Rclone WebDAV mount ($RCLONE_REMOTE_NAME)
+Description=Rclone automatic mount for WebDAV
 After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=user
-Group=user
-ExecStart=/usr/bin/rclone mount $RCLONE_REMOTE_NAME: $RCLONE_MOUNT_POINT \
+ExecStart=/usr/bin/rclone mount \
   --allow-other \
   --vfs-cache-mode full \
-  --log-file /var/log/rclone.log
-ExecStop=/usr/bin/fusermount3 -u $RCLONE_MOUNT_POINT
+  --buffer-size 64M \
+  --log-level INFO \
+  --log-file $LOG_FILE \
+  $REMOTE_NAME: $MOUNT_POINT
+ExecStop=/usr/bin/fusermount3 -u $MOUNT_POINT
 Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
+    # 启用并启动服务
     systemctl daemon-reload
-    systemctl enable --now "$RCLONE_SERVICE" >/dev/null 2>&1
-    sleep 3
+    systemctl enable --now "$SERVICE_NAME" >/dev/null 2>&1
 
-    if systemctl is-active --quiet "$RCLONE_SERVICE"; then
-        echo -e "${GREEN}[✓] rclone服务启动成功${NC}"
+    # 检查服务状态
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        echo -e "${GREEN}[✓] 自动挂载服务启动成功${NC}"
     else
-        echo -e "${RED}rclone服务启动失败！${NC}"
-        systemctl status "$RCLONE_SERVICE" --no-pager | grep -A 5 "Active:"
+        echo -e "${YELLOW}服务启动警告，状态详情：${NC}"
+        systemctl status "$SERVICE_NAME" --no-pager | grep -A 5 "Active:"
     fi
 }
 
-# 验证rclone挂载
-verify_rclone_mount() {
-    echo -e "${YELLOW}[9/10] 验证rclone挂载...${NC}"
-    if mount | grep -q "$RCLONE_MOUNT_POINT"; then
-        echo -e "${GREEN}[✓] rclone成功挂载到$RCLONE_MOUNT_POINT${NC}"
+# ==============================================
+# 阶段6：验证挂载
+# ==============================================
+verify_mount() {
+    echo -e "${YELLOW}[6/8] 验证挂载...${NC}"
+    if mount | grep -q "$MOUNT_POINT"; then
+        echo -e "${GREEN}[✓] 成功挂载到$MOUNT_POINT${NC}"
+        echo -e "挂载内容示例："
+        ls -l "$MOUNT_POINT" | head -n3  # 显示前3个文件/目录
     else
-        echo -e "${YELLOW}rclone挂载未生效，日志：/var/log/rclone.log${NC}"
+        echo -e "${RED}挂载失败！查看日志：$LOG_FILE${NC}"
+        exit 1
     fi
+}
+
+# ==============================================
+# 阶段7：设置开机自启验证
+# ==============================================
+verify_autostart() {
+    echo -e "${YELLOW}[7/8] 验证开机自启...${NC}"
+    if systemctl is-enabled --quiet "$SERVICE_NAME"; then
+        echo -e "${GREEN}[✓] 已设置开机自启${NC}"
+    else
+        echo -e "${YELLOW}警告：未设置开机自启，正在修复...${NC}"
+        systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
+    fi
+}
+
+# ==============================================
+# 阶段8：输出使用说明
+# ==============================================
+show_usage() {
+    echo -e "\n${GREEN}===== 配置完成！使用说明 =====${NC}"
+    echo -e "1. 挂载目录：$MOUNT_POINT"
+    echo -e "2. 服务管理命令："
+    echo -e "   - 查看状态：systemctl status $SERVICE_NAME"
+    echo -e "   - 重启服务：systemctl restart $SERVICE_NAME"
+    echo -e "   - 停止服务：systemctl stop $SERVICE_NAME"
+    echo -e "3. 日志查看：tail -f $LOG_FILE"
+    echo -e "4. 测试文件操作："
+    echo -e "   - 新建文件：touch $MOUNT_POINT/test.txt"
+    echo -e "   - 查看文件：ls $MOUNT_POINT/test.txt"
 }
 
 # ==============================================
 # 主流程
 # ==============================================
 main() {
-    echo -e "${GREEN}===== ngrok + rclone 一站式配置工具 ====="${NC}
+    echo -e "${GREEN}===== Rclone 安装与自动挂载配置工具 ====="${NC}
     check_root
-    install_common_deps
-
-    # 配置ngrok部分
-    echo -e "\n${GREEN}===== 开始配置ngrok SSH隧道 ====="${NC}
-    configure_ssh
-    install_ngrok
-    get_ngrok_info
-
-    # 配置rclone部分
-    echo -e "\n${GREEN}===== 开始配置rclone WebDAV ====="${NC}
+    install_deps
     install_rclone
-    configure_rclone_webdav
-    prepare_rclone_mount
-    create_rclone_service
-    verify_rclone_mount
-
-    # 最终提示
-    echo -e "\n${GREEN}===== 所有配置完成！=====${NC}"
-    echo -e "1. ngrok管理："
-    echo -e "   - 状态：pgrep -f ngrok || echo '未运行'"
-    echo -e "   - 日志：cat /var/log/ngrok.log"
-    echo -e "2. rclone管理："
-    echo -e "   - 状态：sudo systemctl status $RCLONE_SERVICE"
-    echo -e "   - 日志：cat /var/log/rclone.log"
-    echo -e "   - 挂载点：$RCLONE_MOUNT_POINT"
+    configure_remote
+    prepare_mount_point
+    create_systemd_service
+    verify_mount
+    verify_autostart
+    show_usage
+    echo -e "\n${GREEN}===== 所有操作完成！=====${NC}"
 }
 
 main
