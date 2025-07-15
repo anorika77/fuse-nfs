@@ -22,11 +22,16 @@ REMOTE_NAME="test"
 REMOTE_URL="http://yy.19885172.xyz:19798/dav"
 FUSE_CONF="/etc/fuse.conf"
 
-# 步骤 1: 安装依赖
-echo "正在安装必要依赖..."
+# 步骤 1: 清理包管理器并安装依赖
+echo "正在清理包管理器并安装必要依赖..."
+# 清理可能导致冲突的包
 apt-get update
-# 卸载 fuse（如果存在）以避免冲突
-apt-get remove -y fuse || true
+apt-get remove -y --purge fuse || true
+apt-get autoremove -y
+apt-get clean
+# 修复可能损坏的依赖
+apt-get install -f
+# 安装依赖
 apt-get install -y curl unzip fuse3
 
 # 验证依赖安装
@@ -93,7 +98,9 @@ ExecStart=/usr/bin/rclone mount $REMOTE_NAME:/ $MOUNT_POINT \
   --vfs-cache-mode writes \
   --dir-cache-time 72h \
   --cache-dir /tmp/rclone \
-  --vfs-read-chunk-size 32M \
+  --vfs-read-chunk-size lardır
+
+System: 32M \
   --vfs-read-chunk-size-limit off
 ExecStop=/bin/fusermount3 -u $MOUNT_POINT
 Restart=always
