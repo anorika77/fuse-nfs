@@ -55,12 +55,46 @@ else
     exit 1
 fi
 
-# 下载并安装rclone
-curl -O https://downloads.rclone.org/rclone-${RCLONE_VERSION}-linux-${ARCH}.zip
-unzip -q rclone-${RCLONE_VERSION}-linux-${ARCH}.zip
-cp rclone-${RCLONE_VERSION}-linux-${ARCH}/rclone /usr/bin/
+# 下载并安装rclone，使用更可靠的方法
+RCLONE_ZIP="rclone-${RCLONE_VERSION}-linux-${ARCH}.zip"
+RCLONE_URL="https://downloads.rclone.org/${RCLONE_ZIP}"
+
+echo "下载rclone: $RCLONE_URL"
+if ! curl -O --fail "$RCLONE_URL"; then
+    echo "下载rclone失败，请检查网络连接或URL是否正确"
+    exit 1
+fi
+
+# 检查zip文件是否存在
+if [ ! -f "$RCLONE_ZIP" ]; then
+    echo "rclone安装包不存在: $RCLONE_ZIP"
+    exit 1
+fi
+
+# 解压并查找rclone可执行文件
+echo "解压rclone安装包..."
+unzip -q "$RCLONE_ZIP"
+
+# 查找解压后的目录（处理可能的版本号变化）
+RCLONE_DIR=$(find . -type d -name "rclone-*-linux-${ARCH}" | head -n 1)
+
+if [ -z "$RCLONE_DIR" ]; then
+    echo "找不到rclone解压目录"
+    exit 1
+fi
+
+echo "找到rclone目录: $RCLONE_DIR"
+
+# 检查rclone可执行文件是否存在
+if [ ! -f "${RCLONE_DIR}/rclone" ]; then
+    echo "rclone可执行文件不存在于解压目录中"
+    exit 1
+fi
+
+# 安装rclone
+cp "${RCLONE_DIR}/rclone" /usr/bin/
 chmod 755 /usr/bin/rclone
-rm -rf rclone-${RCLONE_VERSION}-linux-${ARCH}*
+rm -rf "$RCLONE_ZIP" "$RCLONE_DIR"
 
 # 检查安装是否成功
 if ! command -v rclone &> /dev/null; then
