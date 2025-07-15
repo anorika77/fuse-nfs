@@ -4,7 +4,7 @@
 set -e
 
 # 日志文件
-LOG_FILE="/var/log/rclone_setup.log"
+LOG_FILE="/home/user/rclone_setup.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 echo "开始执行 rclone 一键安装脚本 - $(date)"
 
@@ -23,12 +23,19 @@ REMOTE_URL="http://yy.19885172.xyz:19798/dav"
 FUSE_CONF="/etc/fuse.conf"
 WEBDAV_USER="root"
 WEBDAV_PASS="password"
+RCLONE_MOUNT_LOG="/home/user/rclone_mount.log"
+RCLONE_TEST_LOG="/home/user/rclone_test.log"
 
 # 验证 user 用户是否存在
 if ! id "user" >/dev/null 2>&1; then
   echo "错误：用户 'user' 不存在，请创建用户或修改挂载点"
   exit 1
 fi
+
+# 确保日志目录存在并设置权限
+mkdir -p /home/user
+chown user:user /home/user
+chmod 755 /home/user
 
 # 步骤 1: 清理包管理器并安装依赖
 echo "正在清理包管理器并安装必要依赖..."
@@ -94,12 +101,14 @@ fi
 
 # 步骤 6: 测试 WebDAV 文件列表
 echo "正在测试 WebDAV 文件列表..."
-if rclone lsd "$REMOTE_NAME:/" --log-file=/var/log/rclone_test.log --log-level DEBUG; then
+if rclone lsd "$REMOTE_NAME:/" --log-file="$RCLONE_TEST_LOG" --log-level DEBUG; then
   echo "WebDAV 文件列表获取成功"
 else
-  echo "错误：无法列出 WebDAV 目录，请检查 /var/log/rclone_test.log"
+  echo "错误：无法列出 WebDAV 目录，请检查 $RCLONE_TEST_LOG"
   exit 1
 fi
+chown user:user "$RCLONE_TEST_LOG" || true
+chmod 644 "$RCLONE_TEST_LOG" || true
 
 # 步骤 7: 创建挂载点
 mkdir -p "$MOUNT_POINT"
@@ -134,7 +143,7 @@ ExecStart=/usr/bin/rclone mount $REMOTE_NAME:/ $MOUNT_POINT \
   --cache-dir /tmp/rclone \
   --vfs-read-chunk-size 32M \
   --vfs-read-chunk-size-limit off \
-  --log-file=/var/log/rclone_mount.log \
+  --log-file=$RCLONE_MOUNT_LOG \
   --log-level DEBUG
 ExecStop=/bin/fusermount3 -u $MOUNT_POINT
 Restart=always
@@ -163,11 +172,13 @@ if mountpoint -q "$MOUNT_POINT"; then
 else
   echo "错误：挂载失败，请检查以下日志："
   echo "- 脚本日志：$LOG_FILE"
-  echo "- rclone 挂载日志：/var/log/rclone_mount.log"
+  echo "- rclone 挂载日志：$RCLONE_MOUNT_LOG"
   echo "- systemd 服务状态：sudo systemctl status rclone-mount.service"
   echo "尝试手动运行以下命令以调试："
   echo "sudo -u user rclone mount $REMOTE_NAME:/ $MOUNT_POINT --allow-other --vfs-cache-mode writes --dir-cache-time 72h --cache-dir /tmp/rclone --vfs-read-chunk-size 32M --vfs-read-chunk-size-limit off --verbose"
   exit 1
 fi
+chown user:user "$LOG_FILE" "$RCLONE_MOUNT_LOG" || true
+chmod 644 "$LOG_FILE" "$RCLONE_MOUNT_LOG" || true
 
-echo "rclone 安装、配置和挂载完成！日志保存在 $LOG_FILE 和 /var/log/rclone_mount.log"
+echo "rclone 安装、配置和挂载完成！日志保存在 $LOG_FILE 和 $RCLONE_MOUNT_LOG"
