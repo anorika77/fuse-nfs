@@ -25,14 +25,16 @@ FUSE_CONF="/etc/fuse.conf"
 # 步骤 1: 安装依赖
 echo "正在安装必要依赖..."
 apt-get update
-apt-get install -y curl unzip fuse fuse3
+# 卸载 fuse（如果存在）以避免冲突
+apt-get remove -y fuse || true
+apt-get install -y curl unzip fuse3
 
 # 验证依赖安装
 if ! command -v fusermount3 &> /dev/null; then
   echo "错误：fuse3 安装失败"
   exit 1
 fi
-echo "依赖安装成功：curl, unzip, fuse, fuse3"
+echo "依赖安装成功：curl, unzip, fuse3"
 
 # 步骤 2: 安装 rclone
 echo "正在安装 rclone..."
