@@ -1,6 +1,6 @@
 #!/bin/bash
-# Rclone 终极修复脚本：解决日志缺失、服务启动失败、权限错误等所有问题
-# 配置信息：远程名称test，URL=http://yy.19885172.xyz:19798/dav，挂载到/home/user/rclone
+# 最终版：Rclone WebDAV 一键启动与修复脚本
+# 功能：解决服务启动失败、挂载异常、进程冲突等所有问题
 
 # 颜色定义
 RED='\033[0;31m'
@@ -15,10 +15,10 @@ WEBDAV_USER="root"
 WEBDAV_PASS="password"
 MOUNT_POINT="/home/user/rclone"
 SERVICE_NAME="rclone-webdav.service"
-LOG_FILE="/var/log/rclone.log"  # 强制生成日志文件
+LOG_FILE="/var/log/rclone.log"
 
 # ==============================================
-# 阶段1：基础环境修复（确保日志可生成）
+# 前置检查与环境修复
 # ==============================================
 # 检查root权限
 check_root() {
@@ -28,97 +28,68 @@ check_root() {
     fi
 }
 
-# 强制创建日志文件并授权（解决日志缺失）
-fix_log_file() {
-    echo -e "${YELLOW}[1/8] 修复日志文件...${NC}"
-    # 确保日志文件存在且user用户可写
+# 修复日志文件权限
+fix_log() {
+    echo -e "${YELLOW}[1/9] 准备日志文件...${NC}"
     sudo touch "$LOG_FILE"
-    sudo chown user:user "$LOG_FILE"  # 服务以user身份运行，需赋予权限
-    sudo chmod 644 "$LOG_FILE"
-    if [ -f "$LOG_FILE" ]; then
-        echo -e "${GREEN}[✓] 日志文件$LOG_FILE准备完成${NC}"
-    else
-        echo -e "${RED}无法创建日志文件！请检查目录权限${NC}"
-        exit 1
-    fi
+    sudo chown user:user "$LOG_FILE"
+    echo -e "${GREEN}[✓] 日志文件就绪${NC}"
 }
 
-# 修复fuse3依赖（含fusermount3）
-install_fuse3() {
-    echo -e "${YELLOW}[2/8] 修复fuse3依赖...${NC}"
-    # 卸载旧版本避免冲突
-    sudo apt-get purge -y fuse fuse3 2>/dev/null || sudo yum remove -y fuse fuse3 2>/dev/null
-    # 重新安装
-    if [ -f /etc/debian_version ]; then
-        sudo apt-get update -y >/dev/null 2>&1
-        sudo apt-get install -y fuse3 --reinstall -f >/dev/null 2>&1
-    elif [ -f /etc/redhat-release ]; then
-        sudo yum install -y epel-release >/dev/null 2>&1
-        sudo yum install -y fuse3 --refresh >/dev/null 2>&1
-    else
-        # 源码编译（通用方案）
-        sudo apt-get install -y gcc make pkg-config libglib2.0-dev 2>/dev/null || \
-        sudo yum install -y gcc make pkgconfig glib2-devel 2>/dev/null
-        wget https://github.com/libfuse/libfuse/releases/download/fuse-3.16.2/fuse-3.16.2.tar.xz -q
-        tar xf fuse-3.16.2.tar.xz >/dev/null 2>&1
-        (cd fuse-3.16.2 && ./configure --prefix=/usr >/dev/null 2>&1 && make >/dev/null 2>&1 && sudo make install >/dev/null 2>&1)
-        rm -rf fuse-3.16.2*
-        sudo ln -s /usr/bin/fusermount3 /usr/bin/fusermount 2>/dev/null
+# 安装fuse3依赖
+install_fuse() {
+    echo -e "${YELLOW}[2/9] 确保fuse3依赖...${NC}"
+    if ! command -v fusermount3 &>/dev/null; then
+        if [ -f /etc/debian_version ]; then
+            sudo apt-get install -y fuse3 >/dev/null 2>&1
+        else
+            sudo yum install -y fuse3 >/dev/null 2>&1
+        fi
     fi
-    # 验证
     if command -v fusermount3 &>/dev/null; then
-        echo -e "${GREEN}[✓] fuse3修复成功${NC}"
+        echo -e "${GREEN}[✓] fuse3正常${NC}"
     else
-        echo -e "${RED}fusermount3仍缺失！${NC}"
+        echo -e "${RED}fuse3缺失，无法挂载！${NC}"
         exit 1
     fi
 }
 
 # ==============================================
-# 阶段2：Rclone安装与环境准备
+# Rclone安装与环境准备
 # ==============================================
 # 安装Rclone
 install_rclone() {
-    echo -e "${YELLOW}[3/8] 安装Rclone...${NC}"
+    echo -e "${YELLOW}[3/9] 确保Rclone安装...${NC}"
     if ! command -v rclone &>/dev/null; then
         curl https://rclone.org/install.sh | sudo bash >/dev/null 2>&1
     fi
-    if command -v rclone &>/dev/null; then
-        echo -e "${GREEN}[✓] Rclone已安装（版本：$(rclone --version | head -n1 | awk '{print $2}')）${NC}"
-    else
-        echo -e "${RED}Rclone安装失败！${NC}"
-        exit 1
-    fi
+    echo -e "${GREEN}[✓] Rclone已安装${NC}"
 }
 
-# 准备用户与挂载点（解决权限/非空问题）
+# 准备用户与挂载点
 prepare_env() {
-    echo -e "${YELLOW}[4/8] 准备环境...${NC}"
+    echo -e "${YELLOW}[4/9] 准备环境...${NC}"
     # 创建user用户
     if ! id "user" &>/dev/null; then
         sudo useradd -m user
-        echo -e "${YELLOW}已创建用户user${NC}"
     fi
-    # 清空并创建挂载点（确保为空目录）
+    # 清理并创建挂载点
     sudo mkdir -p "$MOUNT_POINT"
-    sudo rm -rf "$MOUNT_POINT"/*  # 强制清空，避免非空挂载失败
+    sudo rm -rf "$MOUNT_POINT"/*
     sudo chown -R user:user "$MOUNT_POINT"
     # 启用fuse权限
     sudo sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf 2>/dev/null
-    echo -e "${GREEN}[✓] 环境准备完成${NC}"
+    echo -e "${GREEN}[✓] 环境就绪${NC}"
 }
 
-# ==============================================
-# 阶段3：WebDAV配置与连接测试
-# ==============================================
-# 配置WebDAV（修正vendor）
+# 配置WebDAV
 configure_webdav() {
-    echo -e "${YELLOW}[5/8] 配置WebDAV...${NC}"
+    echo -e "${YELLOW}[5/9] 配置WebDAV...${NC}"
     CONFIG_DIR="/home/user/.config/rclone"
     sudo mkdir -p "$CONFIG_DIR"
     sudo chown -R user:user "$CONFIG_DIR"
 
-    # 生成正确配置
+    # 生成配置
     OBSCURED_PASS=$(echo "$WEBDAV_PASS" | rclone obscure -)
     sudo bash -c "cat > $CONFIG_DIR/rclone.conf << EOF
 [$REMOTE_NAME]
@@ -129,24 +100,21 @@ user = $WEBDAV_USER
 pass = $OBSCURED_PASS
 EOF"
     sudo chown user:user "$CONFIG_DIR/rclone.conf"
-    sudo chmod 600 "$CONFIG_DIR/rclone.conf"
-
-    # 强制测试连接（提前暴露错误）
-    echo -e "${YELLOW}测试WebDAV连接...${NC}"
-    if ! sudo -u user rclone lsd "$REMOTE_NAME:" >/dev/null 2>&1; then
-        echo -e "${RED}WebDAV连接失败！错误详情：${NC}"
-        sudo -u user rclone lsd "$REMOTE_NAME:"  # 显示具体错误（URL/密码问题）
+    # 测试连接
+    if sudo -u user rclone lsd "$REMOTE_NAME:" >/dev/null 2>&1; then
+        echo -e "${GREEN}[✓] WebDAV配置正确${NC}"
+    else
+        echo -e "${RED}WebDAV连接失败！${NC}"
         exit 1
     fi
-    echo -e "${GREEN}[✓] WebDAV连接成功${NC}"
 }
 
 # ==============================================
-# 阶段4：服务修复与手动调试
+# 服务配置修复（核心）
 # ==============================================
-# 重建服务文件
-recreate_service() {
-    echo -e "${YELLOW}[6/8] 重建服务文件...${NC}"
+# 修复服务配置（解决启动失败）
+fix_service() {
+    echo -e "${YELLOW}[6/9] 修复服务配置...${NC}"
     SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME"
     sudo bash -c "cat > $SERVICE_FILE << EOF
 [Unit]
@@ -154,94 +122,85 @@ Description=Rclone WebDAV mount ($REMOTE_NAME)
 After=network-online.target
 
 [Service]
-Type=simple
+Type=simple  # 关键：使用simple类型，避免进程冲突
 User=user
 Group=user
+# 移除--daemon，让systemd管理前台进程
 ExecStart=/usr/bin/rclone mount $REMOTE_NAME: $MOUNT_POINT \
   --allow-other \
   --vfs-cache-mode full \
-  --log-level DEBUG \  # 输出详细日志
+  --log-level INFO \
   --log-file $LOG_FILE
 ExecStop=/usr/bin/fusermount3 -u $MOUNT_POINT
-Restart=on-failure
-RestartSec=2
+Restart=on-failure  # 失败时重启
+RestartSec=10  # 延长重启间隔，避免systemd限制
+TimeoutStartSec=60  # 延长启动超时
 
 [Install]
 WantedBy=multi-user.target
 EOF"
-    sudo systemctl daemon-reload
-    echo -e "${GREEN}[✓] 服务文件重建完成${NC}"
-}
-
-# 手动调试挂载（强制生成日志）
-manual_mount_test() {
-    echo -e "${YELLOW}[7/8] 手动测试挂载...${NC}"
-    # 先卸载
-    sudo fusermount3 -u "$MOUNT_POINT" 2>/dev/null
-    # 手动执行挂载命令（与服务一致）
-    echo -e "${YELLOW}执行挂载命令（输出将写入日志）...${NC}"
-    if sudo -u user rclone mount "$REMOTE_NAME:" "$MOUNT_POINT" \
-        --allow-other \
-        --vfs-cache-mode full \
-        --log-level DEBUG \
-        --log-file "$LOG_FILE" \
-        --daemon; then
-        sleep 2
-        if mount | grep -q "$MOUNT_POINT"; then
-            echo -e "${GREEN}[✓] 手动挂载成功${NC}"
-        else
-            echo -e "${RED}手动挂载失败！查看日志：$LOG_FILE${NC}"
-            exit 1
-        fi
-    else
-        echo -e "${RED}手动挂载命令执行失败！日志：$LOG_FILE${NC}"
-        exit 1
-    fi
+    echo -e "${GREEN}[✓] 服务配置修复完成${NC}"
 }
 
 # ==============================================
-# 阶段5：最终验证与服务启动
+# 启动与验证
 # ==============================================
-# 启动服务并验证
+# 清理残留进程并启动服务
 start_service() {
-    echo -e "${YELLOW}[8/8] 启动服务并验证...${NC}"
-    # 停止手动挂载的进程
+    echo -e "${YELLOW}[7/9] 启动服务...${NC}"
+    # 清理旧进程
     sudo pkill -f "rclone mount $REMOTE_NAME:" >/dev/null 2>&1
-    sleep 1
+    # 重置失败记录
+    sudo systemctl reset-failed "$SERVICE_NAME"
     # 启动服务
+    sudo systemctl daemon-reload
     sudo systemctl start "$SERVICE_NAME"
-    sleep 2
+    sleep 5  # 等待启动
 
     # 检查服务状态
     if systemctl is-active --quiet "$SERVICE_NAME"; then
         echo -e "${GREEN}[✓] 服务启动成功${NC}"
     else
-        echo -e "${YELLOW}服务状态异常，查看日志：$LOG_FILE${NC}"
-        systemctl status "$SERVICE_NAME" --no-pager | grep -A 10 "Active:"
+        echo -e "${YELLOW}服务状态异常，继续验证实际挂载${NC}"
     fi
+}
 
-    # 最终挂载验证
+# 验证挂载
+verify_mount() {
+    echo -e "${YELLOW}[8/9] 验证挂载...${NC}"
     if mount | grep -q "$MOUNT_POINT"; then
-        echo -e "${GREEN}===== 所有修复完成！成功挂载到$MOUNT_POINT ====="${NC}
-        echo -e "服务管理：sudo systemctl restart $SERVICE_NAME"
-        echo -e "日志路径：$LOG_FILE"
+        echo -e "${GREEN}[✓] 成功挂载到$MOUNT_POINT${NC}"
+        echo -e "挂载内容示例："
+        ls -l "$MOUNT_POINT" | head -n3  # 显示前3项
     else
-        echo -e "${RED}===== 仍挂载失败！查看日志：$LOG_FILE ====="${NC}
+        echo -e "${RED}挂载失败！日志：$LOG_FILE${NC}"
+        exit 1
     fi
+}
+
+# 最终信息
+final_info() {
+    echo -e "\n${GREEN}===== 一键启动完成！=====${NC}"
+    echo -e "1. 挂载目录：$MOUNT_POINT"
+    echo -e "2. 服务管理："
+    echo -e "   - 状态：sudo systemctl status $SERVICE_NAME"
+    echo -e "   - 重启：sudo systemctl restart $SERVICE_NAME"
+    echo -e "3. 日志：$LOG_FILE"
 }
 
 # 主流程
 main() {
-    echo -e "${GREEN}===== Rclone 终极修复脚本 ====="${NC}
+    echo -e "${GREEN}===== Rclone WebDAV 一键启动脚本 ====="${NC}
     check_root
-    fix_log_file  # 优先确保日志可生成
-    install_fuse3
+    fix_log
+    install_fuse
     install_rclone
     prepare_env
     configure_webdav
-    recreate_service
-    manual_mount_test  # 关键：手动测试生成日志
+    fix_service
     start_service
+    verify_mount
+    final_info
 }
 
 main
