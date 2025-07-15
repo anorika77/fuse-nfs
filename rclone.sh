@@ -1,5 +1,5 @@
 #!/bin/bash
-# Rclone一键安装配置脚本（针对http://yy.19885172.xyz:19798/dav定制）
+# Rclone一键安装配置脚本（修复引号错误）
 
 # 颜色定义
 RED='\033[0;31m'
@@ -7,9 +7,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 
-# 配置参数（已根据用户需求预设）
-REMOTE_NAME="test"           # 远程机器命名为test
-WEBDAV_URL="http://yy.19885172.xyz:19798/dav"  # 更新后的URL
+# 配置参数
+REMOTE_NAME="test"
+WEBDAV_URL="http://yy.19885172.xyz:19798/dav"
 WEBDAV_USER="root"
 WEBDAV_PASS="password"
 MOUNT_POINT="/home/user/rclone"
@@ -217,9 +217,9 @@ show_usage() {
     echo -e "日志文件: ${GREEN}$LOG_FILE${NC}"
 }
 
-# 主函数
+# 主函数（修复引号错误）
 main() {
-    echo -e "${GREEN}===== Rclone一键安装配置工具 ====="${NC}"
+    echo -e "${GREEN}===== Rclone一键安装配置工具 ====${NC}"  # 修复此处引号
     echo -e "${YELLOW}将使用以下配置：${NC}"
     echo -e "  WebDAV URL: ${GREEN}$WEBDAV_URL${NC}"
     echo -e "  用户名: ${GREEN}$WEBDAV_USER${NC}"
