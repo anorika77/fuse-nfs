@@ -1,16 +1,15 @@
 #!/bin/bash
-# Rclone WebDAV 一键安装配置脚本（彻底修复引号错误）
-# 适配系统：Ubuntu/Debian/CentOS/Rocky Linux
+# Rclone一键安装配置脚本（针对http://yy.19885172.xyz:19798/dav定制）
 
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
-NC='\033[0m'  # 重置颜色
+NC='\033[0m'
 
-# 配置参数
-REMOTE_NAME="test"
-WEBDAV_URL="http://yy.19885172.xyz:19798/dav"
+# 配置参数（已根据用户需求预设）
+REMOTE_NAME="test"           # 远程机器命名为test
+WEBDAV_URL="http://yy.19885172.xyz:19798/dav"  # 更新后的URL
 WEBDAV_USER="root"
 WEBDAV_PASS="password"
 MOUNT_POINT="/home/user/rclone"
@@ -21,22 +20,27 @@ CONFIG_DIR="/root/.config/rclone"
 # 检查root权限
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
-        echo -e "${RED}错误：必须使用root权限运行（sudo bash $0）${NC}"
+        echo -e "${RED}错误：请使用root权限运行此脚本 (sudo bash $0)${NC}"
         exit 1
     fi
 }
 
 # 检测操作系统
 detect_os() {
-    [ -f /etc/debian_version ] && echo "debian" && return
-    [ -f /etc/redhat-release ] && echo "rhel" && return
-    echo "unknown"
+    if [ -f /etc/debian_version ]; then
+        echo "debian"
+    elif [ -f /etc/redhat-release ]; then
+        echo "rhel"
+    else
+        echo "unknown"
+    fi
 }
 
 # 安装依赖
 install_deps() {
-    echo -e "${YELLOW}[1/9] 安装依赖...${NC}"
+    echo -e "${YELLOW}[1/6] 安装依赖...${NC}"
     OS=$(detect_os)
+    
     case $OS in
         "debian")
             apt-get update -y >/dev/null 2>&1
@@ -50,52 +54,41 @@ install_deps() {
             exit 1
             ;;
     esac
-
-    for cmd in curl fusermount3; do
-        if ! command -v $cmd &>/dev/null; then
-            echo -e "${RED}依赖$cmd安装失败！${NC}"
-            exit 1
-        fi
-    done
+    
+    if ! command -v curl &>/dev/null || ! command -v fusermount3 &>/dev/null; then
+        echo -e "${RED}依赖安装失败！${NC}"
+        exit 1
+    fi
+    
     echo -e "${GREEN}[✓] 依赖安装完成${NC}"
 }
 
 # 安装Rclone
 install_rclone() {
-    echo -e "${YELLOW}[2/9] 安装Rclone...${NC}"
+    echo -e "${YELLOW}[2/6] 安装Rclone...${NC}"
+    
     if ! command -v rclone &>/dev/null; then
         curl https://rclone.org/install.sh | bash >/dev/null 2>&1
         
-        # 备用安装方法
         if ! command -v rclone &>/dev/null; then
-            echo -e "${YELLOW}尝试备用安装方法...${NC}"
-            ARCH=$(uname -m)
-            case $ARCH in
-                x86_64) ARCH="amd64" ;;
-                aarch64) ARCH="arm64" ;;
-                *) echo -e "${RED}不支持的架构：$ARCH${NC}"; exit 1 ;;
-            esac
-            RCLONE_VERSION=$(curl -s https://api.github.com/repos/rclone/rclone/releases/latest | grep "tag_name" | cut -d'"' -f4 | tr -d 'v')
-            wget -q https://downloads.rclone.org/v$RCLONE_VERSION/rclone-v$RCLONE_VERSION-linux-$ARCH.deb -O /tmp/rclone.deb
-            dpkg -i /tmp/rclone.deb >/dev/null 2>&1
-            rm /tmp/rclone.deb
+            echo -e "${RED}Rclone安装失败！${NC}"
+            exit 1
         fi
     fi
     
-    if command -v rclone &>/dev/null; then
-        echo -e "${GREEN}[✓] Rclone已安装（版本：$(rclone --version | head -n1 | awk '{print $2}')）${NC}"
-    else
-        echo -e "${RED}Rclone安装失败！请手动安装：https://rclone.org/install/${NC}"
-        exit 1
-    fi
+    echo -e "${GREEN}[✓] Rclone已安装 (版本: $(rclone --version | head -n1))${NC}"
 }
 
-# 配置WebDAV远程
-configure_remote() {
-    echo -e "${YELLOW}[3/9] 配置WebDAV远程（名称：$REMOTE_NAME）...${NC}"
+# 配置Rclone
+configure_rclone() {
+    echo -e "${YELLOW}[3/6] 配置Rclone...${NC}"
+    
     mkdir -p "$CONFIG_DIR"
     
+    # 加密密码
     OBSCURED_PASS=$(echo "$WEBDAV_PASS" | rclone obscure -)
+    
+    # 创建配置文件
     cat > "$CONFIG_DIR/rclone.conf" << EOF
 [$REMOTE_NAME]
 type = webdav
@@ -105,28 +98,34 @@ user = $WEBDAV_USER
 pass = $OBSCURED_PASS
 EOF
     
+    # 测试配置
+    echo -e "${YELLOW}测试WebDAV连接...${NC}"
     if rclone lsd "$REMOTE_NAME:" >/dev/null 2>&1; then
-        echo -e "${GREEN}[✓] 远程$REMOTE_NAME配置成功${NC}"
+        echo -e "${GREEN}[✓] WebDAV连接成功${NC}"
     else
-        echo -e "${RED}远程$REMOTE_NAME连接失败！${NC}"
-        rclone lsd "$REMOTE_NAME:"
+        echo -e "${RED}WebDAV连接失败！请检查URL、用户名和密码${NC}"
+        echo -e "${YELLOW}错误详情：${NC}"
+        rclone lsd "$REMOTE_NAME:" 2>&1 || true
         exit 1
     fi
 }
 
 # 准备挂载点
 prepare_mount_point() {
-    echo -e "${YELLOW}[4/9] 准备挂载点$MOUNT_POINT...${NC}"
+    echo -e "${YELLOW}[4/6] 准备挂载点...${NC}"
     
+    # 创建用户（如果不存在）
     if ! id "user" &>/dev/null; then
         useradd -m -s /bin/false user
-        echo -e "${YELLOW}已创建用户user${NC}"
+        echo -e "${GREEN}[✓] 用户'user'已创建${NC}"
     fi
     
+    # 创建挂载点目录
     mkdir -p "$MOUNT_POINT"
     chown -R user:user "$MOUNT_POINT"
     chmod 755 "$MOUNT_POINT"
     
+    # 启用fuse用户挂载
     if ! grep -q "user_allow_other" /etc/fuse.conf; then
         echo "user_allow_other" >> /etc/fuse.conf
     fi
@@ -134,12 +133,11 @@ prepare_mount_point() {
     echo -e "${GREEN}[✓] 挂载点准备完成${NC}"
 }
 
-# 配置自动挂载服务
+# 创建systemd服务
 create_systemd_service() {
-    echo -e "${YELLOW}[5/9] 创建自动挂载服务...${NC}"
-    SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME"
+    echo -e "${YELLOW}[5/6] 创建systemd服务...${NC}"
     
-    cat > "$SERVICE_FILE" << EOF
+    cat > "/etc/systemd/system/$SERVICE_NAME" << EOF
 [Unit]
 Description=Rclone mount for $REMOTE_NAME
 Wants=network-online.target
@@ -172,89 +170,71 @@ StartLimitBurst=3
 WantedBy=default.target
 EOF
     
+    # 重载systemd并启用服务
     systemctl daemon-reload
     systemctl enable --now "$SERVICE_NAME" >/dev/null 2>&1
     
+    # 检查服务状态
     if systemctl is-active --quiet "$SERVICE_NAME"; then
-        echo -e "${GREEN}[✓] 服务启动成功${NC}"
+        echo -e "${GREEN}[✓] Rclone服务已启动并设置为开机自启${NC}"
     else
-        echo -e "${YELLOW}服务状态异常：${NC}"
-        systemctl status "$SERVICE_NAME" --no-pager | grep -A 5 "Active:"
-    fi
-}
-
-# 验证挂载
-verify_mount() {
-    echo -e "${YELLOW}[6/9] 验证挂载...${NC}"
-    if mount | grep -q "$MOUNT_POINT"; then
-        echo -e "${GREEN}[✓] 成功挂载到$MOUNT_POINT${NC}"
-        echo -e "挂载内容示例："
-        sudo -u user ls -l "$MOUNT_POINT" | head -n3
-    else
-        echo -e "${RED}挂载失败！查看日志：$LOG_FILE${NC}"
+        echo -e "${RED}Rclone服务启动失败！${NC}"
+        systemctl status "$SERVICE_NAME" --no-pager
         exit 1
     fi
 }
 
-# 验证开机自启
-verify_autostart() {
-    echo -e "${YELLOW}[7/9] 验证开机自启...${NC}"
-    if systemctl is-enabled --quiet "$SERVICE_NAME"; then
-        echo -e "${GREEN}[✓] 已设置开机自启${NC}"
+# 验证安装
+verify_installation() {
+    echo -e "${YELLOW}[6/6] 验证安装...${NC}"
+    
+    # 检查挂载点
+    if mount | grep -q "$MOUNT_POINT"; then
+        echo -e "${GREEN}[✓] 挂载点$MOUNT_POINT已成功挂载${NC}"
     else
-        echo -e "${YELLOW}修复开机自启配置...${NC}"
-        systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
+        echo -e "${RED}挂载点未挂载！请检查日志：$LOG_FILE${NC}"
+        exit 1
     fi
+    
+    # 列出挂载内容
+    echo -e "${YELLOW}挂载内容示例：${NC}"
+    sudo -u user ls -l "$MOUNT_POINT" | head -n5 || true
+    
+    echo -e "${GREEN}[✓] Rclone安装配置完成！${NC}"
 }
 
-# 优化系统参数
-optimize_system() {
-    echo -e "${YELLOW}[8/9] 优化系统参数...${NC}"
-    
-    if ! grep -q "user hard nofile 65535" /etc/security/limits.conf; then
-        cat >> /etc/security/limits.conf << EOF
-user hard nofile 65535
-user soft nofile 65535
-EOF
-    fi
-    
-    if ! grep -q "vm.max_map_count" /etc/sysctl.conf; then
-        cat >> /etc/sysctl.conf << EOF
-vm.max_map_count=262144
-vm.swappiness=10
-net.core.rmem_max=2500000
-EOF
-        sysctl -p >/dev/null 2>&1
-    fi
-    
-    echo -e "${GREEN}[✓] 系统参数优化完成${NC}"
-}
-
-# 输出使用说明
+# 显示使用帮助
 show_usage() {
-    echo -e "\n${GREEN}===== 配置完成！=====${NC}"
-    echo -e "1. 远程名称：$REMOTE_NAME"
-    echo -e "2. 挂载目录：$MOUNT_POINT"
-    echo -e "3. 服务管理："
-    echo -e "   - 状态：systemctl status $SERVICE_NAME"
-    echo -e "   - 重启：systemctl restart $SERVICE_NAME"
-    echo -e "4. 日志路径：$LOG_FILE"
+    echo -e "\n${GREEN}===== Rclone使用指南 ====="${NC}
+    echo -e "远程名称: ${GREEN}$REMOTE_NAME${NC}"
+    echo -e "WebDAV URL: ${GREEN}$WEBDAV_URL${NC}"
+    echo -e "挂载点: ${GREEN}$MOUNT_POINT${NC}"
+    echo -e "服务管理:"
+    echo -e "  ${YELLOW}启动:${NC} systemctl start $SERVICE_NAME"
+    echo -e "  ${YELLOW}停止:${NC} systemctl stop $SERVICE_NAME"
+    echo -e "  ${YELLOW}重启:${NC} systemctl restart $SERVICE_NAME"
+    echo -e "  ${YELLOW}状态:${NC} systemctl status $SERVICE_NAME"
+    echo -e "日志文件: ${GREEN}$LOG_FILE${NC}"
 }
 
-# 主流程（彻底修复引号错误）
+# 主函数
 main() {
-    echo -e "${GREEN}===== Rclone WebDAV 一键安装配置工具 ====="${NC}
+    echo -e "${GREEN}===== Rclone一键安装配置工具 ====="${NC}"
+    echo -e "${YELLOW}将使用以下配置：${NC}"
+    echo -e "  WebDAV URL: ${GREEN}$WEBDAV_URL${NC}"
+    echo -e "  用户名: ${GREEN}$WEBDAV_USER${NC}"
+    echo -e "  远程名称: ${GREEN}$REMOTE_NAME${NC}"
+    echo -e "  挂载路径: ${GREEN}$MOUNT_POINT${NC}"
+    echo
+    
     check_root
     install_deps
     install_rclone
-    configure_remote
+    configure_rclone
     prepare_mount_point
     create_systemd_service
-    verify_mount
-    verify_autostart
-    optimize_system
+    verify_installation
     show_usage
-    echo -e "\n${GREEN}===== 操作完成！=====${NC}"
 }
 
 main
