@@ -1,16 +1,14 @@
 #!/bin/bash
-# Rclone WebDAV 一键安装配置脚本（修复语法错误）
+# Rclone WebDAV 一键安装配置脚本（彻底修复引号错误）
 # 适配系统：Ubuntu/Debian/CentOS/Rocky Linux
 
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
-NC='\033[0m'
+NC='\033[0m'  # 重置颜色
 
-# ==============================================
 # 配置参数
-# ==============================================
 REMOTE_NAME="test"
 WEBDAV_URL="http://yy.19885172.xyz:19798/dav"
 WEBDAV_USER="root"
@@ -20,22 +18,22 @@ SERVICE_NAME="rclone.service"
 LOG_FILE="/var/log/rclone.log"
 CONFIG_DIR="/root/.config/rclone"
 
-# ==============================================
-# 阶段1：环境检查与依赖安装
-# ==============================================
+# 检查root权限
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
-        echo -e "${RED}错误：请用root权限运行（sudo bash $0）${NC}"
+        echo -e "${RED}错误：必须使用root权限运行（sudo bash $0）${NC}"
         exit 1
     fi
 }
 
+# 检测操作系统
 detect_os() {
     [ -f /etc/debian_version ] && echo "debian" && return
     [ -f /etc/redhat-release ] && echo "rhel" && return
     echo "unknown"
 }
 
+# 安装依赖
 install_deps() {
     echo -e "${YELLOW}[1/9] 安装依赖...${NC}"
     OS=$(detect_os)
@@ -62,9 +60,7 @@ install_deps() {
     echo -e "${GREEN}[✓] 依赖安装完成${NC}"
 }
 
-# ==============================================
-# 阶段2：安装Rclone
-# ==============================================
+# 安装Rclone
 install_rclone() {
     echo -e "${YELLOW}[2/9] 安装Rclone...${NC}"
     if ! command -v rclone &>/dev/null; then
@@ -94,9 +90,7 @@ install_rclone() {
     fi
 }
 
-# ==============================================
-# 阶段3：配置WebDAV远程
-# ==============================================
+# 配置WebDAV远程
 configure_remote() {
     echo -e "${YELLOW}[3/9] 配置WebDAV远程（名称：$REMOTE_NAME）...${NC}"
     mkdir -p "$CONFIG_DIR"
@@ -120,9 +114,7 @@ EOF
     fi
 }
 
-# ==============================================
-# 阶段4：准备挂载点
-# ==============================================
+# 准备挂载点
 prepare_mount_point() {
     echo -e "${YELLOW}[4/9] 准备挂载点$MOUNT_POINT...${NC}"
     
@@ -142,9 +134,7 @@ prepare_mount_point() {
     echo -e "${GREEN}[✓] 挂载点准备完成${NC}"
 }
 
-# ==============================================
-# 阶段5：配置自动挂载服务
-# ==============================================
+# 配置自动挂载服务
 create_systemd_service() {
     echo -e "${YELLOW}[5/9] 创建自动挂载服务...${NC}"
     SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME"
@@ -193,9 +183,7 @@ EOF
     fi
 }
 
-# ==============================================
-# 阶段6：验证挂载
-# ==============================================
+# 验证挂载
 verify_mount() {
     echo -e "${YELLOW}[6/9] 验证挂载...${NC}"
     if mount | grep -q "$MOUNT_POINT"; then
@@ -208,9 +196,7 @@ verify_mount() {
     fi
 }
 
-# ==============================================
-# 阶段7：验证开机自启
-# ==============================================
+# 验证开机自启
 verify_autostart() {
     echo -e "${YELLOW}[7/9] 验证开机自启...${NC}"
     if systemctl is-enabled --quiet "$SERVICE_NAME"; then
@@ -221,9 +207,7 @@ verify_autostart() {
     fi
 }
 
-# ==============================================
-# 阶段8：优化系统参数
-# ==============================================
+# 优化系统参数
 optimize_system() {
     echo -e "${YELLOW}[8/9] 优化系统参数...${NC}"
     
@@ -246,9 +230,7 @@ EOF
     echo -e "${GREEN}[✓] 系统参数优化完成${NC}"
 }
 
-# ==============================================
-# 阶段9：输出使用说明
-# ==============================================
+# 输出使用说明
 show_usage() {
     echo -e "\n${GREEN}===== 配置完成！=====${NC}"
     echo -e "1. 远程名称：$REMOTE_NAME"
@@ -259,9 +241,7 @@ show_usage() {
     echo -e "4. 日志路径：$LOG_FILE"
 }
 
-# ==============================================
-# 主流程（修复引号错误）
-# ==============================================
+# 主流程（彻底修复引号错误）
 main() {
     echo -e "${GREEN}===== Rclone WebDAV 一键安装配置工具 ====="${NC}
     check_root
