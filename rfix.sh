@@ -1,5 +1,5 @@
 #!/bin/bash
-# rclone一键安装配置脚本 - 修复参数错误版本
+# rclone一键安装配置脚本 - 最终参数错误最终版
 
 # 颜色与符号定义
 SUCCESS="✅"
@@ -26,21 +26,22 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-# 后台执行核心逻辑
-(
-    # 清理旧挂载
-    echo -e "${YELLOW}${INFO} 清理旧挂载状态...${NC}"
+# 清理函数 - 确保环境干净
+cleanup() {
     fusermount -u "$MOUNT_POINT" 2>/dev/null
     umount -l "$MOUNT_POINT" 2>/dev/null
     pkill -f "rclone mount $DAV_NAME:" 2>/dev/null
     rm -rf "$MOUNT_POINT" 2>/dev/null
     mkdir -p "$MOUNT_POINT"
+}
 
+# 主挂载函数
+mount_webdav() {
     # 配置日志目录
-    echo -e "${YELLOW}${INFO} 配置日志目录...${NC}"
     mkdir -p "$LOG_DIR"
     chown -R $SUDO_USER:$SUDO_USER "$LOG_DIR"
     chmod 755 "$LOG_DIR"
+    > "$LOG_PATH"  # 清空日志
 
     # 配置fuse
     if ! grep -q "^user_allow_other" /etc/fuse.conf 2>/dev/null; then
@@ -48,13 +49,11 @@ fi
     fi
 
     # 安装依赖
-    echo -e "${YELLOW}${INFO} 安装必要依赖...${NC}"
     apt update -y >/dev/null 2>&1
     apt install -y fuse3 wget unzip >/dev/null 2>&1
 
     # 安装rclone
     if [ ! -f "$RCLONE_PATH" ]; then
-        echo -e "${YELLOW}${INFO} 安装rclone...${NC}"
         wget -q https://github.com/rclone/rclone/releases/download/v1.65.0/rclone-v1.65.0-linux-amd64.zip -O /tmp/rclone.zip
         unzip -q /tmp/rclone.zip -d /tmp
         cp /tmp/rclone-*-linux-amd64/rclone "$RCLONE_PATH"
@@ -63,7 +62,6 @@ fi
     fi
 
     # 配置rclone
-    echo -e "${YELLOW}${INFO} 配置WebDAV连接...${NC}"
     mkdir -p /root/.config/rclone/
     cat > /root/.config/rclone/rclone.conf << EOF
 [$DAV_NAME]
@@ -74,19 +72,12 @@ user = $DAV_USER
 pass = $("$RCLONE_PATH" obscure "$DAV_PASS")
 EOF
 
-    # 清空旧日志
-    > "$LOG_PATH"
-
-    # 修复：移除多余参数，确保命令格式正确
-    echo -e "${YELLOW}${INFO} 正在后台挂载...${NC}"
-    "$RCLONE_PATH" mount \
-        "$DAV_NAME:" "$MOUNT_POINT" \
-        --vfs-cache-mode writes \
-        --allow-other \
-        --log-file "$LOG_PATH" \
-        --log-level INFO \
-        --daemon >/dev/null 2>&1
-
+    # 核心修复：使用紧凑格式避免多余空格，确保参数正确
+    local mount_command="$RCLONE_PATH mount \"$DAV_NAME:\" \"$MOUNT_POINT\" --vfs-cache-mode writes --allow-other --log-file \"$LOG_PATH\" --log-level INFO --daemon"
+    
+    # 执行挂载命令
+    eval $mount_command >/dev/null 2>&1
+    
     # 验证挂载
     sleep 3
     if mountpoint -q "$MOUNT_POINT"; then
@@ -95,12 +86,18 @@ EOF
     else
         echo -e "${RED}${ERROR} 挂载失败${NC}"
         echo -e "${YELLOW}${INFO} 查看日志：tail -f $LOG_PATH${NC}"
+        echo -e "${YELLOW}${INFO} 尝试手动挂载：$RCLONE_PATH mount $DAV_NAME: $MOUNT_POINT --vfs-cache-mode writes --allow-other${NC}"
     fi
-) &
+}
 
-# 立即返回终端
-disown
+# 执行清理
+echo -e "${YELLOW}${INFO} 清理旧挂载状态...${NC}"
+cleanup
+
+# 后台执行挂载并立即返回终端
 echo -e "${YELLOW}${INFO} 脚本在后台执行中...${NC}"
-echo -e "${YELLOW}${INFO} 几秒后将显示结果，您可继续其他操作${NC}"
+echo -e "${YELLOW}${INFO} 结果将在几秒后显示，您可继续其他操作${NC}"
+mount_webdav &
+disown
 sleep 1
 exit 0
