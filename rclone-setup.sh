@@ -1,5 +1,5 @@
 #!/bin/bash
-# 重建rclone-webdav.service并修复挂载
+# 修正Rclone WebDAV的vendor配置，消除"Unknown vendor"警告
 
 # 颜色定义
 RED='\033[0;31m'
@@ -9,114 +9,75 @@ NC='\033[0m'
 
 # 配置参数
 REMOTE_NAME="test"
-MOUNT_POINT="/home/user/rclone"
-SYSTEMD_SERVICE="rclone-webdav.service"
-LOG_FILE="/home/user/.cache/rclone/rclone-test.log"
+CONFIG_PATH="/home/user/.config/rclone/rclone.conf"
+SERVICE_NAME="rclone-webdav.service"
 
-# 检查root权限
-if [ "$(id -u)" -ne 0 ]; then
-    echo -e "${RED}错误：请用root权限运行（sudo bash $0）${NC}"
+# 检查配置文件是否存在
+if [ ! -f "$CONFIG_PATH" ]; then
+    echo -e "${RED}配置文件不存在：$CONFIG_PATH${NC}"
     exit 1
 fi
 
-# 步骤1：创建systemd服务文件
-create_service() {
-    echo -e "${YELLOW}[1/4] 重建系统服务文件...${NC}"
-    SERVICE_FILE="/etc/systemd/system/$SYSTEMD_SERVICE"
+# 修正vendor为"other"（通用类型）
+fix_vendor() {
+    echo -e "${YELLOW}[1/3] 修正vendor配置...${NC}"
+    # 直接替换配置文件中的vendor值
+    sed -i "s/vendor = webdav/vendor = other/" "$CONFIG_PATH"
+    # 确保配置文件权限正确（user用户可访问）
+    chown user:user "$CONFIG_PATH"
+    chmod 600 "$CONFIG_PATH"
     
-    # 生成服务配置
-    sudo bash -c "cat > $SERVICE_FILE << EOF
-[Unit]
-Description=Rclone mount for WebDAV ($REMOTE_NAME)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=user
-Group=user
-ExecStart=/usr/bin/rclone mount $REMOTE_NAME: $MOUNT_POINT \
-  --allow-other \
-  --vfs-cache-mode full \
-  --buffer-size 64M \
-  --vfs-read-chunk-size 128M \
-  --log-level INFO \
-  --log-file $LOG_FILE
-ExecStop=/usr/bin/fusermount3 -u $MOUNT_POINT
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF"
-    
-    echo -e "${GREEN}[✓] 服务文件创建完成${NC}"
-}
-
-# 步骤2：修复fuse3依赖（再次确认）
-fix_fuse() {
-    echo -e "${YELLOW}[2/4] 确认fuse3依赖...${NC}"
-    if ! command -v fusermount3 &>/dev/null; then
-        # 自动安装fuse3
-        if [ -f /etc/debian_version ]; then
-            sudo apt-get update >/dev/null 2>&1
-            sudo apt-get install -y fuse3 >/dev/null 2>&1
-        elif [ -f /etc/redhat-release ]; then
-            sudo yum install -y fuse3 >/dev/null 2>&1
-        else
-            echo -e "${RED}不支持的系统，需手动安装fuse3${NC}"
-            exit 1
-        fi
-    fi
-    
-    # 验证
-    if command -v fusermount3 &>/dev/null; then
-        echo -e "${GREEN}[✓] fuse3依赖正常${NC}"
+    # 验证修正结果
+    if grep -q "vendor = other" "$CONFIG_PATH"; then
+        echo -e "${GREEN}[✓] 配置已修正，vendor设置为other${NC}"
     else
-        echo -e "${RED}fuse3仍缺失，请手动安装！${NC}"
+        echo -e "${RED}[×] 配置修正失败，请手动编辑$CONFIG_PATH${NC}"
         exit 1
     fi
 }
 
-# 步骤3：重启服务
+# 重启Rclone服务
 restart_service() {
-    echo -e "${YELLOW}[3/4] 启动服务...${NC}"
-    # 清理残留进程
-    sudo pkill -f "rclone mount" >/dev/null 2>&1
-    # 重新加载并启动
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now "$SYSTEMD_SERVICE"
+    echo -e "${YELLOW}[2/3] 重启Rclone服务...${NC}"
+    # 停止残留进程
+    pkill -f "rclone mount" >/dev/null 2>&1
+    # 重启服务
+    systemctl daemon-reload
+    systemctl restart "$SERVICE_NAME"
     sleep 2
     
     # 检查服务状态
-    if systemctl is-active --quiet "$SYSTEMD_SERVICE"; then
-        echo -e "${GREEN}[✓] 服务启动成功${NC}"
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        echo -e "${GREEN}[✓] 服务重启成功${NC}"
     else
         echo -e "${YELLOW}[!] 服务状态异常，查看详情：${NC}"
-        systemctl status "$SYSTEMD_SERVICE" --no-pager | grep -A 10 "Active:"
+        systemctl status "$SERVICE_NAME" --no-pager | grep -A 5 "Active:"
     fi
 }
 
-# 步骤4：验证挂载
-verify_mount() {
-    echo -e "${YELLOW}[4/4] 验证挂载...${NC}"
-    if mount | grep -q "$MOUNT_POINT"; then
-        echo -e "${GREEN}[✓] 成功挂载到$MOUNT_POINT${NC}"
-        echo -e "测试命令：ls $MOUNT_POINT"
+# 验证警告是否消除
+verify_warning() {
+    echo -e "${YELLOW}[3/3] 验证警告是否消除...${NC}"
+    # 查看最新日志（过滤vendor相关信息）
+    LOG_FILE="/home/user/.cache/rclone/rclone-test.log"
+    if grep -q "Unknown vendor " "$LOG_FILE"; then
+        echo -e "${YELLOW}[!] 仍存在警告，查看完整日志：${NC}"
+        grep "vendor" "$LOG_FILE"  # 显示相关日志
     else
-        echo -e "${RED}[×] 挂载失败！查看日志：${LOG_FILE}${NC}"
-        echo -e "手动挂载命令："
-        echo -e "sudo -u user rclone mount $REMOTE_NAME: $MOUNT_POINT --allow-other --vfs-cache-mode full --log-level DEBUG"
+        echo -e "${GREEN}[✓] 警告已消除，配置正常${NC}"
+        # 检查挂载状态
+        if mount | grep -q "/home/user/rclone"; then
+            echo -e "挂载成功：/home/user/rclone"
+        fi
     fi
 }
 
 # 主流程
 main() {
-    echo -e "${GREEN}===== 开始重建Rclone服务 ====="${NC}
-    create_service
-    fix_fuse
+    echo -e "${GREEN}===== 修复WebDAV vendor警告 ====="${NC}
+    fix_vendor
     restart_service
-    verify_mount
+    verify_warning
     echo -e "${GREEN}===== 操作完成 ====="${NC}
 }
 
